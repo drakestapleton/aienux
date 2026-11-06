@@ -21,8 +21,8 @@
     "generated": {
       "children": [
         {
-          "digest": "2754ea9db14ed6e051dfb67ef1940170b5b680293d2bd0d26c6a3219c3b9da93",
-          "last_commit": "800595d0",
+          "digest": "fc491bf9ab591bdc2065379f71a34d4a572d866f7225e74745dcaf73c773bac7",
+          "last_commit": "72bca564",
           "name": "crates",
           "purpose": "Directory crates. Purpose not yet described by a human."
         },
@@ -51,15 +51,15 @@
           "purpose": "First-party host artifact preparation tools"
         }
       ],
-      "children_root": "sha256:7eef3a8f7e6c7044fe5d7c9e203741eaf95bd6021ed4f879e5c44daeaf193552",
-      "compiled_at": "2026-11-06T13:40:39Z",
+      "children_root": "sha256:6b121afe0e7bc6ab5114ae4880e57aae282a8df324ba86582fc88ae21dedd7a5",
+      "compiled_at": "2026-11-06T14:11:33Z",
       "compiler": "crumb-compile/1",
-      "digest": "sha256:57860763c458b83f3577380454dbe1fe1220412472f2aa2b98d0b2cdc2d9a7ff",
+      "digest": "sha256:114b473a75d273407a8d0819ade7a4bf6f0a5cebd4b1e2792342d98ae4dc905d",
       "evidence_files": 392,
       "evidence_root": "sha256:21295040af737637275f8863f93700421b9552286e96e613ae8de21f7ad8d6c1",
       "files": 4150,
-      "generated_at_commit": "eafa51abfa15e7dd8fb32620da383714f105dbbe",
-      "source_tree": "sha256:0558c5ec83b6216b18f9a7c07d4521fe606dc09a6e2249a54071965543f1c8bd"
+      "generated_at_commit": "66d88059374606ec76d495e909b8fc22ae73801d",
+      "source_tree": "sha256:da37918aefeb73db8bcb37c700bbd46d212c5214025882d2849329997e792ade"
     },
     "owner_lane": "",
     "provenance": {
