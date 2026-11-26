@@ -1,0 +1,129 @@
+note SPDX-License-Identifier: MIT OR GPL-2.0-only
+note memchk: every decision about a file's memory objects: AGPU_MEM_ALLOC arguments, overlap with the
+note file's live objects, the mmap offset of a handle and back, the mmap placement, device slices and
+note the kernel-buffer VA range. The kernel glue keeps the table and acts on the verdicts.
+note Calls agpu_memchk op tab a b c d. tab: the file's live objects as (va, size) pairs, slot order,
+note 256 pairs (kmod/aien_gpu_mem.c struct agpu_fmem ranges). Results 1000000 and up are refusals; the
+note kernel reports code = result - 1000000 with AGPU_RM_E_ARG.
+note op 1 a=size b=va c=flags (struct agpu_mem_alloc, kmod/aien_gpu_uapi.h): 0, or refusal 1 size 0,
+note   not a multiple of 4096 or above 64 GiB; 2 va not 4096-aligned; 3 [va, va+size) not below 2^48;
+note   4 overlaps GSP's [4 GiB, 4.5 GiB) (SPLIT_VAS_SERVER_RM_MANAGED_VA_START/SIZE,
+note   g_gpu_vaspace_nvoc.h:99-100); 5 flags other than AGPU_MEM_GPU_UNCACHED (1).
+note op 2 a=n live objects b=va c=size: 0, or refusal 6 overlaps a live object, 7 n > 256 (a defect),
+note   8 the table is full.
+note op 3 a=vm_start b=length c=object va d=object size: 0 when the mapping covers the object exactly
+note   (CPU VA == GPU VA), else refusal 9.
+note op 4 a=mmap offset (bytes): the handle, or refusal 10 (not AGPU_MMAP_MEM_BASE + handle << 36 with
+note   handle 1 .. 2^20-1). op 7 a=handle: its mmap offset, or refusal 13.
+note op 5 a=off b=length c=object size: 0 when [off, off+length) is a non-empty part of the object,
+note   else refusal 11.
+note op 6 a=device address of one page b=of the next page: 0 when contiguous, else refusal 12.
+note op 8 a=cursor b=size: start of a kernel buffer at or after cursor, aligned to size rounded up to a
+note   power of two (4 KiB .. 2 MiB), inside [2^48, 2^48 + 2^40); refusal 14 size 0 or no room.
+note Constants (Wolfram): 64 GiB = 2^36 = 68719476736, 2^48 = 281474976710656, 4 GiB = 4294967296,
+note 4.5 GiB = 4831838208, AGPU_MMAP_MEM_BASE = 2 << 40 = 2199023255552, 2^20 = 1048576,
+note 2^36 - 1 = 68719476735, 2^48 + 2^40 = 282574488338432, 2 MiB = 2097152.
+fn alloc sz ulong va ulong fl ulong to ulong
+if or or eq sz 0 ne and sz 4095 0 gt sz 68719476736
+ret 1000001
+end
+if ne and va 4095 0
+ret 1000002
+end
+if or ge va 281474976710656 gt sz sub 281474976710656 va
+ret 1000003
+end
+if and lt va 4831838208 gt add va sz 4294967296
+ret 1000004
+end
+if ne and fl 4294967294 0
+ret 1000005
+end
+ret 0
+end
+fn overlap tab view ulong 512 n ulong va ulong sz ulong to ulong
+if gt n 256
+ret 1000007
+end
+if eq n 256
+ret 1000008
+end
+for k ulong n
+ov = get tab mul k 2
+os = get tab add mul k 2 1
+if and lt va add ov os lt ov add va sz
+ret 1000006
+end
+end
+ret 0
+end
+fn hfromo o ulong to ulong
+if lt o 2199023255552
+ret 1000010
+end
+r = sub o 2199023255552
+if ne and r 68719476735 0
+ret 1000010
+end
+h = shr r 36
+if or eq h 0 ge h 1048576
+ret 1000010
+end
+ret h
+end
+fn kva cur ulong sz ulong to ulong
+if or eq sz 0 gt sz 1099511627776
+ret 1000014
+end
+al = ulong 4096
+while and lt al sz lt al 2097152 bound 10
+al = mul al 2
+end
+st = and add cur sub al 1 not sub al 1
+if lt st 281474976710656
+st = 281474976710656
+end
+if gt add st sz 282574488338432
+ret 1000014
+end
+ret st
+end
+fn agpu_memchk op ulong tab view ulong 512 a ulong b ulong c ulong d ulong to ulong
+if eq op 1
+ret alloc a b c
+end
+if eq op 2
+ret overlap tab a b c
+end
+if eq op 3
+if and eq a c eq b d
+ret 0
+end
+ret 1000009
+end
+if eq op 4
+ret hfromo a
+end
+if eq op 5
+if or or eq b 0 ge a c gt b sub c a
+ret 1000011
+end
+ret 0
+end
+if eq op 6
+if eq b add a 4096
+ret 0
+end
+ret 1000012
+end
+if eq op 7
+if or eq a 0 ge a 1048576
+ret 1000013
+end
+ret add 2199023255552 shl a 36
+end
+if eq op 8
+ret kva a b
+end
+ret 1000099
+end

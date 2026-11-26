@@ -1,0 +1,40 @@
+note SPDX-License-Identifier: MIT OR GPL-2.0-only
+note mqput: copy a sealed message (agpu_rpc_seal) into GSP's command queue ring.
+note The command queue is the 256 KiB region GSP reads: a 4096-byte header page (msgqTxHeader:
+note version 0, size 4, msgSize 8, msgCount 12, writePtr 16, flags 20, rxHdrOff 24, entryOff 28) and
+note 63 slots of 4096 bytes from offset 4096. GSP's read pointer lives in GSP's own queue (SWAP_RX);
+note the kernel reads it (READ_ONCE) and passes it as gsprd.
+note This unit writes the slots only. It returns the new write pointer; the kernel then issues the
+note store fence and publishes it at offset 16 (message_queue_cpu.c:574-576), then notifies GSP
+note (GSP QUEUE_HEAD(0) = 0). Oracle: aienux c9678d7b gsp_mq_send (tests/host/parity_mq.c).
+note Result: new write pointer 0..62, or 1000000 plus: 1 a ring pointer is 63 or more, 2 queue full,
+note 3 element count 0 or more than 16.
+fn rd32 m view uchar 262144 o ulong to ulong
+a = or ulong get m o shl ulong get m add o 1 8
+b = or shl ulong get m add o 2 16 shl ulong get m add o 3 24
+ret or a b
+end
+fn cpslot q edit uchar 262144 slot ulong msg view uchar 65536 e ulong to void
+d = add 4096 mul slot 4096
+s = mul e 4096
+for k ulong 4096
+put q add d k get msg add s k
+end
+end
+fn agpu_mq_put q edit uchar 262144 msg view uchar 65536 elems ulong gsprd ulong to ulong
+wr = rd32 q 16
+if or ge wr 63 ge gsprd 63
+ret 1000001
+end
+if or eq elems 0 gt elems 16
+ret 1000003
+end
+room = rem sub add gsprd 63 add wr 1 63
+if lt room elems
+ret 1000002
+end
+for e ulong elems
+cpslot q rem add wr e 63 msg e
+end
+ret rem add wr elems 63
+end

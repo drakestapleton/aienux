@@ -1,0 +1,74 @@
+note SPDX-License-Identifier: MIT OR GPL-2.0-only
+note gb20b_policy: silicon-proven GB20B (BOOT_0=0x1bb000a1, BOOT_42=0x1bba1000) GPU driver policy in pure Omega.
+note Verified live on DGX Spark GB20B (Window 1, 2026-11-26, ZERO nvidia.ko, ZERO MMU faults).
+note Entry: agpu_gb20b_policy op a b
+note   op 1 a=buf_kind (0..11): required VER3 PTE cache flag (1 = GPU_UNCACHED, PCF=0x11) for GR ctx buffers.
+note   op 2 a=root_iova b=old_sc_lo: patched SC_PDB(0) low 32 bits ((root & ~0xfff) | (old_sc & 0xfff)).
+note   op 3 a=root_iova: patched SC_PDB(0) high 32 bits (root >> 32).
+note   op 4 a=gcb_idx (0..6) b=already_init (0|1): bInitialize flag (1 iff gcb_idx >= 5 and already_init == 0).
+note   op 5 a=is_tsg_ctxshare (0|1) b=vas_handle: NV_CHANNEL_ALLOC_PARAMS.hVASpace (0 when TSG+ctxshare).
+note   op 6 a=runlist (0..127) b=chid (0..4095): GB20B doorbell work-submit token (0x40000000 | runlist<<16 | chid).
+note Refusals: 1000001..1000099.
+fn p4k pa ulong to bool
+if eq pa 0
+ret false
+end
+if ne and pa 4095 0
+ret false
+end
+ret lt pa 4503599627370496
+end
+fn agpu_gb20b_policy op ulong a ulong b ulong to ulong
+if eq op 1
+if gt a 11
+ret 1000001
+end
+ret 1
+end
+if eq op 2
+if not p4k a
+ret 1000002
+end
+if eq and b 4095 1
+ret 1000003
+end
+ret or and a 4294963200 and b 4095
+end
+if eq op 3
+if not p4k a
+ret 1000002
+end
+ret shr a 32
+end
+if eq op 4
+if gt a 6
+ret 1000004
+end
+if gt b 1
+ret 1000005
+end
+if and ge a 5 eq b 0
+ret 1
+end
+ret 0
+end
+if eq op 5
+if gt a 1
+ret 1000006
+end
+if eq a 1
+ret 0
+end
+if gt b 4294967295
+ret 1000007
+end
+ret b
+end
+if eq op 6
+if or gt a 127 gt b 4095
+ret 1000008
+end
+ret or 1073741824 or shl a 16 b
+end
+ret 1000099
+end

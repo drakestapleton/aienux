@@ -1,0 +1,110 @@
+note SPDX-License-Identifier: Apache-2.0
+note Pure seeded Omega AArch64 bare-metal EFI self-check (target a64efi, ZERO C).
+note Verifies GB20B GPU policy units (ident + gmmu + gb20b_policy) and Allen state machine
+note inside virtual QEMU firmware via ConOut (efi 13). Staged strictly in build/ only.
+
+text ehPrompt "fn solve a ulong to ulong"
+text ehReply "ret add shr a 6 and a 432"
+text ehPassPrefix "AIENOS_EFI_HELIX_AA64: PASS gpu_units=ident+gmmu+gb20b_policy allen_seq="
+text ehKeyHist " allen_hist="
+text ehFailMsg "AIENOS_EFI_HELIX_AA64: FAIL code="
+
+fn ehFlush to void
+r = efi 13 0 Outb 0 get Outlen 0
+end
+
+fn ehFail code ulong to int
+outreset
+for i ulong len ehFailMsg
+emitb get ehFailMsg i
+end
+emitn code
+emitb 10
+ehFlush
+ret int code
+end
+
+fn ehCheckGpu to ulong
+if ne agpu_ident 4318 11794 67108864 464519329 465178624 1 0
+ret 1
+end
+gb10b42 = add shl ulong 26 24 shl ulong 11 20
+if eq agpu_ident 4318 11794 67108864 464519329 gb10b42 1 0
+ret 2
+end
+for k ulong 12
+if ne agpu_gb20b_policy 1 k 0 1
+ret 3
+end
+end
+pa0 = ulong 3219128320
+if ne agpu_gmmu 3 pa0 1 or pa0 141
+ret 4
+end
+if ne agpu_gb20b_policy 2 1087666610176 3263736839 1039887367
+ret 5
+end
+if ne agpu_gb20b_policy 3 1087666610176 0 253
+ret 6
+end
+if ne agpu_gb20b_policy 4 5 0 1
+ret 7
+end
+if ne agpu_gb20b_policy 5 1 3404726273 0
+ret 8
+end
+if ne agpu_gb20b_policy 6 0 0 1073741824
+ret 9
+end
+ret 0
+end
+
+fn ehCheckAllen to ulong
+note Negative control: empty prompt must be refused by Allen admission
+put Inlen 0 0
+if start 1 100
+ret 10
+end
+note Positive: admit prompt and commit reply
+for i ulong len ehPrompt
+put In i get ehPrompt i
+end
+put Inlen 0 len ehPrompt
+if not start 1 100
+ret 11
+end
+for i ulong len ehReply
+put In i get ehReply i
+end
+put Inlen 0 len ehReply
+if not answer get R 0 105
+ret 12
+end
+if or ne get R 0 1 ne get R 9 2
+ret 13
+end
+ret 0
+end
+
+fn main to int
+rc = ehCheckGpu
+if ne rc 0
+ret ehFail rc
+end
+rc2 = ehCheckAllen
+if ne rc2 0
+ret ehFail rc2
+end
+outreset
+for i ulong len ehPassPrefix
+emitb get ehPassPrefix i
+end
+emitn get R 0
+for i ulong len ehKeyHist
+emitb get ehKeyHist i
+end
+emitn get R 9
+emitb 10
+ehFlush
+ret 0
+end

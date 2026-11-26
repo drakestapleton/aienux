@@ -1,0 +1,101 @@
+note SPDX-License-Identifier: MIT OR GPL-2.0-only
+note mqget: read and check one message from GSP's status queue.
+note statq: the 256 KiB status queue GSP writes (same header shape as the command queue, see mqput).
+note rd: our read pointer (kept in our command queue at offset 32, SWAP_RX); wr: GSP's write pointer,
+note read by the kernel with READ_ONCE followed by a read fence before this call, so no slot is read
+note before the pointer that covers it. out receives the message: header, payload, zeros to a multiple
+note of 8. After a positive result the kernel fences and stores (rd + result) mod 63 as our read pointer.
+note Checks, as aienux c9678d7b gsp_mq_recv (oracle, tests/host/parity_mq.c): header shape (version 0,
+note size 262144, msgSize 4096, msgCount 63, rxHdrOff 32 or more, entryOff 4096), pointers below 63,
+note elemCount 1..16 and not past wr, RPC length 32..elements, checksum over the rounded length is 0,
+note seqNum equals rxseq, signature "VRPC" (1129337430).
+note Result: elements consumed (1..16), 0 when the queue is empty, or 1000000 plus: 1 header shape,
+note 2 ring pointer, 3 element count, 4 RPC length, 5 checksum, 6 sequence number, 7 signature.
+fn rd32 m view uchar 262144 o ulong to ulong
+a = or ulong get m o shl ulong get m add o 1 8
+b = or shl ulong get m add o 2 16 shl ulong get m add o 3 24
+ret or a b
+end
+fn ro32 m view uchar 65536 o ulong to ulong
+a = or ulong get m o shl ulong get m add o 1 8
+b = or shl ulong get m add o 2 16 shl ulong get m add o 3 24
+ret or a b
+end
+fn hdrok s view uchar 262144 to bool
+if ne rd32 s 0 0
+ret false
+end
+if ne rd32 s 4 262144
+ret false
+end
+if ne rd32 s 8 4096
+ret false
+end
+if ne rd32 s 12 63
+ret false
+end
+if lt rd32 s 24 32
+ret false
+end
+ret eq rd32 s 28 4096
+end
+fn cksum m view uchar 65536 n ulong to ulong
+x = ulong 0
+o = ulong 0
+while lt o n bound 8192
+w = ulong 0
+for k ulong 8
+w = or w shl ulong get m add o k mul k 8
+end
+x = xor x w
+o = add o 8
+end
+ret xor shr x 32 and x 4294967295
+end
+fn soff rd ulong b ulong to ulong
+slot = rem add rd div b 4096 63
+ret add add 4096 mul slot 4096 rem b 4096
+end
+fn cpout s view uchar 262144 out edit uchar 65536 rd ulong mlen ulong to void
+up8 = and add mlen 7 18446744073709551608
+for b ulong up8
+v = uchar 0
+if lt b mlen
+v = get s soff rd b
+end
+put out b v
+end
+end
+fn agpu_mq_get s view uchar 262144 out edit uchar 65536 rd ulong wr ulong rxseq ulong to ulong
+if not hdrok s
+ret 1000001
+end
+if or ge wr 63 ge rd 63
+ret 1000002
+end
+avail = rem sub add wr 63 rd 63
+if eq avail 0
+ret 0
+end
+first = add 4096 mul rd 4096
+elems = rd32 s add first 40
+rlen = rd32 s add first 56
+if or or eq elems 0 gt elems avail gt elems 16
+ret 1000003
+end
+if or lt rlen 32 gt add 48 rlen mul elems 4096
+ret 1000004
+end
+mlen = add 48 rlen
+cpout s out rd mlen
+if ne cksum out and add mlen 7 18446744073709551608 0
+ret 1000005
+end
+if ne ro32 out 36 rxseq
+ret 1000006
+end
+if ne ro32 out 52 1129337430
+ret 1000007
+end
+ret elems
+end

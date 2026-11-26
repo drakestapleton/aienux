@@ -1,0 +1,246 @@
+note SPDX-License-Identifier: MIT OR GPL-2.0-only
+note rmctl: build one stage-C GSP_RM_CONTROL / FREE / UNLOADING_GUEST_DRIVER payload into the staging
+note buffer at byte 80 (split from om/rm.om, which builds the allocations: one kcheck stack budget each).
+note Call: agpu_rm_ctl op m a, same contract and refusal codes as om/rm.om (a[48] function, a[49] rpclen,
+note a[50] placed; 1000000 + code). Ops 11..17 below. Hex constants written in decimal (Wolfram):
+note 4294967295 = 0xffffffff, 2097152 = 0x200000, 4294967296 = 0x100000000, 4831838207 = 0x11fffffff,
+note 2431713542 = 0x90f10106, 2691432714 = 0xa06c010a, 2691432705 = 0xa06c0101, 545259819 = 0x2080012b.
+note (A first draft had 2416967942 for 0x90f10106; the Wolfram conversion caught it.)
+fn p32 m edit uchar 65536 o ulong v ulong to void
+put m o uchar and v 255
+put m add o 1 uchar and shr v 8 255
+put m add o 2 uchar and shr v 16 255
+put m add o 3 uchar and shr v 24 255
+end
+fn p64 m edit uchar 65536 o ulong v ulong to void
+p32 m o and v 4294967295
+p32 m add o 4 shr v 32
+end
+fn r32 m edit uchar 65536 o ulong to ulong
+x = or ulong get m o shl ulong get m add o 1 8
+y = or shl ulong get m add o 2 16 shl ulong get m add o 3 24
+ret or x y
+end
+fn r64 m edit uchar 65536 o ulong to ulong
+ret or r32 m o shl r32 m add o 4 32
+end
+fn zero m edit uchar 65536 o ulong n ulong to void
+k = ulong 0
+while lt k n bound 65536
+put m add o k 0
+k = add k 1
+end
+end
+note a[i..i+n) all fit 32 bits
+fn fits a edit ulong 64 i ulong n ulong to bool
+k = ulong 0
+while lt k n bound 64
+if gt get a add i k 4294967295
+ret false
+end
+k = add k 1
+end
+ret true
+end
+fn nonzero a edit ulong 64 i ulong n ulong to bool
+k = ulong 0
+while lt k n bound 64
+if eq get a add i k 0
+ret false
+end
+k = add k 1
+end
+ret true
+end
+fn done a edit ulong 64 fnum ulong rlen ulong placed ulong to ulong
+put a 48 fnum
+put a 49 rlen
+put a 50 placed
+ret 0
+end
+note rpc_gsp_rm_control_v03_00 at 80: hClient, hObject, cmd, status 0, paramsSize, flags 0
+fn chdr m edit uchar 65536 hc ulong ho ulong cmd ulong psize ulong to void
+zero m 80 add 40 psize
+p32 m 80 hc
+p32 m 84 ho
+p32 m 88 cmd
+p32 m 96 psize
+end
+note op 11 CONTROL with zeroed params of a3 bytes, first u32 = a4 (baseIndex, runlistId) when a3 >= 4.
+note a0 hClient a1 hObject a2 cmd.
+fn actl m edit uchar 65536 a edit ulong 64 to ulong
+n = get a 3
+if gt n 65376
+ret 1000010
+end
+chdr m get a 0 get a 1 get a 2 n
+if ge n 4
+if gt get a 4 4294967295
+ret 1000003
+end
+p32 m 120 get a 4
+end
+ret done a 76 add 40 n add 40 n
+end
+note op 12 PROMOTE_FAULT_METHOD_BUFFERS on (hClient, hTsg), 0xa06c010a, 88 bytes: two
+note NV2080_CTRL_INTERNAL_MEMDESC_INFO {base, size, alignment 1, addressSpace 1, cpuCacheAttrib 0 cached}
+note (kernel_channel_group_api.c:450-489), bar2Addr 0, numValidEntries 2. a0 hClient a1 hTsg a2 base0
+note a3 size0 a4 base1 a5 size1.
+fn imd m edit uchar 65536 o ulong base ulong size ulong to void
+p64 m o base
+p64 m add o 8 size
+p64 m add o 16 1
+p32 m add o 24 1
+p32 m add o 28 0
+end
+fn afmb m edit uchar 65536 a edit ulong 64 to ulong
+if or eq get a 3 0 eq get a 5 0
+ret 1000004
+end
+if or ne and get a 2 4095 0 ne and get a 4 4095 0
+ret 1000004
+end
+chdr m get a 0 get a 1 2691432714 88
+imd m 120 get a 2 get a 3
+imd m 152 get a 4 get a 5
+p32 m 200 2
+ret done a 76 128 128
+end
+note op 13 PROMOTE_CTX on (hClient, hSub), 0x2080012b, NV2080_CTRL_GPU_PROMOTE_CTX_PARAMS 560:
+note engineType 1 (GR0) @0, hChanClient @12, hObject (channel) @16, entryCount @40, entries @48 (32 each):
+note gpuPhysAddr, gpuVirtAddr, size, physAttr (APERTURE 1:0 COH_SYS 1 or NCOH_SYS 2 | GPU_CACHEABLE_NO 4,
+note kgrctxPrepareInitializeCtxBuffer), bufferId u16 @28, bInitialize @30, bNonmapped @31.
+note a0 hClient a1 hSub a2 hChan a3 count (1..6); entry k at a[8 + 6k]: pa va size uncached bufid flags
+note (bit0 bInitialize, bit1 bNonmapped).
+fn pent m edit uchar 65536 a edit ulong 64 k ulong to ulong
+i = add 8 mul k 6
+o = add 168 mul k 32
+if or gt get a add i 3 1 gt get a add i 4 12
+ret 1000008
+end
+if or gt get a add i 5 3 ne and get a i 4095 0
+ret 1000004
+end
+p64 m o get a i
+p64 m add o 8 get a add i 1
+p64 m add o 16 get a add i 2
+p32 m add o 24 add 5 get a add i 3
+put m add o 28 uchar get a add i 4
+put m add o 30 uchar and get a add i 5 1
+put m add o 31 uchar shr get a add i 5 1
+ret 0
+end
+fn aprom m edit uchar 65536 a edit ulong 64 to ulong
+n = get a 3
+if or eq n 0 gt n 6
+ret 1000008
+end
+chdr m get a 0 get a 1 545259819 560
+p32 m 120 1
+p32 m 132 get a 0
+p32 m 136 get a 2
+p32 m 160 n
+k = ulong 0
+while lt k n bound 6
+r = pent m a k
+if ne r 0
+ret r
+end
+k = add k 1
+end
+ret done a 76 600 600
+end
+note op 14 COPY_SERVER_RESERVED_PDES on (hClient, hVas), 0x90f10106: the kernel copied the 184-byte
+note params from kmod/aien_gpu_mem.c (agpu_vas_reserved_pdes) to 120. This writes the header and
+note hSubDevice @0 / subDeviceId @4 (0), and checks the shape: pageSize 2 MiB @8, virtAddrLo 4 GiB @16,
+note virtAddrHi 4.5 GiB - 1 @24, numLevelsToCopy 1..6 @32, each level's physAddress 4 KiB aligned.
+fn arpd m edit uchar 65536 a edit ulong 64 to ulong
+if ne r64 m 128 2097152
+ret 1000009
+end
+if or ne r64 m 136 4294967296 ne r64 m 144 4831838207
+ret 1000009
+end
+n = r32 m 152
+if or eq n 0 gt n 6
+ret 1000009
+end
+k = ulong 0
+while lt k n bound 6
+if ne and r64 m add 160 mul k 24 4095 0
+ret 1000009
+end
+k = add k 1
+end
+p32 m 80 get a 0
+p32 m 84 get a 1
+p32 m 88 2431713542
+p32 m 92 0
+p32 m 96 184
+p32 m 100 0
+p32 m 104 0
+p32 m 108 0
+p64 m 112 0
+p32 m 120 get a 2
+p32 m 124 0
+ret done a 76 224 224
+end
+note op 15 GPFIFO_SCHEDULE on (hClient, hTsg), 0xa06c0101, {bEnable 1, bSkipSubmit 0, bSkipEnable 0}.
+fn asch m edit uchar 65536 a edit ulong 64 to ulong
+chdr m get a 0 get a 1 2691432705 3
+put m 120 1
+ret done a 76 43 43
+end
+note op 16 FREE (fn 10): NVOS00_PARAMETERS_v03_00 {hRoot, hObjectParent 0, hObjectOld, status 0}.
+fn afree m edit uchar 65536 a edit ulong 64 to ulong
+zero m 80 16
+p32 m 80 get a 0
+p32 m 88 get a 1
+ret done a 10 16 16
+end
+note Handles: a0 and a1 are handles for every op but 17; 13 and 14 also name a2.
+fn hok op ulong a edit ulong 64 to ulong
+n = ulong 2
+if or eq op 13 eq op 14
+n = 3
+end
+if eq op 17
+n = 0
+end
+if not fits a 0 n
+ret 1000003
+end
+if not nonzero a 0 n
+ret 1000002
+end
+ret 0
+end
+fn agpu_rm_ctl op ulong m edit uchar 65536 a edit ulong 64 to ulong
+r = hok op a
+if ne r 0
+ret r
+end
+if eq op 11
+ret actl m a
+end
+if eq op 12
+ret afmb m a
+end
+if eq op 13
+ret aprom m a
+end
+if eq op 14
+ret arpd m a
+end
+if eq op 15
+ret asch m a
+end
+if eq op 16
+ret afree m a
+end
+if eq op 17
+zero m 80 8
+ret done a 47 8 8
+end
+ret 1000001
+end

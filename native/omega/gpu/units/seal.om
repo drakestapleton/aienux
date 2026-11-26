@@ -1,0 +1,73 @@
+note SPDX-License-Identifier: MIT OR GPL-2.0-only
+note seal: finish one GSP command-queue message in the staging buffer: element header, RPC header,
+note checksum, zero tail. The kernel glue has already put the RPC payload at byte 80.
+note Oracle: aien-dev/aienux c9678d7b native/kernel/dev/gb10_gsp_boot.c gsp_mq_send (header fields and
+note _checkSum32 as message_queue_cpu.c of open-gpu-kernel-modules 580.173.02); tests/host/parity_mq.c.
+note Layout (GSP_MSG_QUEUE_ELEMENT, 48 bytes, then rpc_message_header_v, 32 bytes):
+note 0 authTag[16], 16 aad[16], 32 checkSum, 36 seqNum, 40 elemCount, 44 pad,
+note 48 header_version 0x03000000 (50331648), 52 signature "VRPC" 0x43505256 (1129337430), 56 length
+note (32 + rpclen), 60 function, 64 rpc_result and 68 rpc_result_private 0xffffffff (pending),
+note 72 sequence, 76 cpuRmGfid 0. Payload from 80.
+note rpclen: payload bytes the RPC length counts. placed: payload bytes present and sent (may exceed
+note rpclen: GSP_RM_ALLOC sends its params outside the length, as rpcRmApiAlloc_GSP does).
+note The checksum is the XOR of the little-endian 64-bit words over the message length rounded up to 8,
+note bytes past the length counted as 0, the checksum field 0; stored as high half XOR low half.
+note Result: the element count (1..16, 4096 bytes each), or 1000000 plus: 1 placed shorter than rpclen,
+note 2 message longer than 65536 bytes, 3 placed bytes beyond the elements the length covers.
+fn put32 m edit uchar 65536 o ulong v ulong to void
+put m o uchar and v 255
+put m add o 1 uchar and shr v 8 255
+put m add o 2 uchar and shr v 16 255
+put m add o 3 uchar and shr v 24 255
+end
+fn get64 m view uchar 65536 o ulong lim ulong to ulong
+w = ulong 0
+for k ulong 8
+if lt add o k lim
+w = or w shl ulong get m add o k mul k 8
+end
+end
+ret w
+end
+fn sealhdr m edit uchar 65536 fnum ulong rpclen ulong seq ulong txseq ulong elems ulong to void
+for k ulong 80
+put m k 0
+end
+put32 m 36 txseq
+put32 m 40 elems
+put32 m 48 50331648
+put32 m 52 1129337430
+put32 m 56 add 32 rpclen
+put32 m 60 fnum
+put32 m 64 4294967295
+put32 m 68 4294967295
+put32 m 72 seq
+end
+fn agpu_rpc_seal m edit uchar 65536 fnum ulong rpclen ulong placed ulong seq ulong txseq ulong to ulong
+if lt placed rpclen
+ret 1000001
+end
+mlen = add 80 rpclen
+if gt mlen 65536
+ret 1000002
+end
+elems = div add mlen 4095 4096
+tot = add 80 placed
+if gt tot mul elems 4096
+ret 1000003
+end
+sealhdr m fnum rpclen seq txseq elems
+b = tot
+while lt b mul elems 4096 bound 65536
+put m b 0
+b = add b 1
+end
+x = ulong 0
+o = ulong 0
+while lt o mlen bound 8192
+x = xor x get64 m o mlen
+o = add o 8
+end
+put32 m 32 xor shr x 32 and x 4294967295
+ret elems
+end

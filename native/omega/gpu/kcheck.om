@@ -1,0 +1,293 @@
+note SPDX-License-Identifier: MIT OR GPL-2.0-only
+note kcheck: may these omc function-mode words run inside the Linux kernel? Reads one unit's words
+note on stdin, prints one verdict line, exits 0 (KCHECK PASS) or 1 (KCHECK FAIL, first bad word).
+note Fail-closed allowlist: every word must decode as one of the A64 classes below (Arm ARM DDI0487
+note M.d, section C4.1 "A64 instruction set encoding" and the class tables of C4.1.2-C4.1.8), and:
+note - general registers only x0..x17 and x30, plus register 31 where the class makes it SP or XZR;
+note   x18 is the kernel shadow call stack, x19..x28 are callee-saved for the C caller, x29 the frame chain;
+note - loads and stores only the base-register forms without writeback, general registers only (V = 0);
+note - no SIMD/FP, system, exception (svc/hvc/brk), pointer-auth, pair, literal or adr word at all;
+note - branches stay inside the unit; br only as `br x16` right after `ldr x16, [x7, #16]` (the trap
+note   entry of the runtime table), ret only `ret x30`;
+note - SP changes only by `sub sp, sp, #imm` / `add sp, sp, #imm`; the sum of every frame reserved
+note   anywhere in the unit must be at most 4096 bytes. omc refuses call cycles in function mode
+note   (OMEGESE 9.2, error 9), so no call chain can stack more than that sum.
+note Verdict: KCHECK PASS words=N stack=S, or KCHECK FAIL word=I hex=H why=W.
+global code uchar 1048576
+global outb uchar 128
+global st ulong 4
+fn w32 i ulong to ulong
+o = mul i 4
+a = or ulong get code o shl ulong get code add o 1 8
+b = or shl ulong get code add o 2 16 shl ulong get code add o 3 24
+ret or a b
+end
+fn fld w ulong sh ulong to ulong
+ret and shr w sh 31
+end
+note a general register usable by Omega code (31 is decided per class by the caller)
+fn regok r ulong to bool
+if le r 17
+ret true
+end
+ret or eq r 30 eq r 31
+end
+fn r3ok w ulong to bool
+if not regok fld w 0
+ret false
+end
+if not regok fld w 5
+ret false
+end
+ret regok fld w 16
+end
+fn sext v ulong bits ulong to long
+x = long v
+if ge v shl ulong 1 sub bits 1
+x = sub x long shl ulong 1 bits
+end
+ret x
+end
+note branch target word index i + off must lie inside the unit
+fn tgtok i ulong off long n ulong to bool
+t = add long i off
+if lt t 0
+ret false
+end
+ret lt t long n
+end
+note 1 ok, 0 bad. Classes with an SP role checked here.
+fn addsubimm w ulong to ulong
+rd = fld w 0
+rn = fld w 5
+s = and shr w 29 1
+if not and regok rd regok rn
+ret 0
+end
+if or eq s 1 ne rd 31
+ret 1
+end
+note rd is SP: only sub sp, sp, #imm (frame) or add sp, sp, #imm (release), 64-bit
+if or ne rn 31 eq and shr w 31 1 0
+ret 0
+end
+if eq and shr w 30 1 1
+imm = and shr w 10 4095
+if eq and shr w 22 1 1
+imm = shl imm 12
+end
+put st 1 add get st 1 imm
+end
+ret 1
+end
+note data processing, immediate and register classes (DDI0487 M.d C4.1.86 and C4.1.87 groups):
+note add/sub immediate 0x11000000/0x1f800000, add/sub shifted register 0x0b000000/0x1f200000,
+note logical immediate 0x12000000/0x1f800000 (rd 31 is SP unless ANDS), logical shifted register
+note 0x0a000000/0x1f000000, move wide 0x12800000/0x1f800000 (opc 01 unallocated), bitfield
+note 0x13000000/0x1f800000. Decimals from Wolfram FromDigits (2026-10-26).
+fn dp w ulong to ulong
+if eq and w 528482304 285212672
+ret addsubimm w
+end
+if eq and w 522190848 184549376
+ret ret01 r3ok w
+end
+if eq and w 528482304 301989888
+if and eq fld w 0 31 ne and shr w 29 3 3
+ret 0
+end
+ret ret01 and regok fld w 0 regok fld w 5
+end
+if eq and w 520093696 167772160
+ret ret01 r3ok w
+end
+if eq and w 528482304 310378496
+if eq and shr w 29 3 1
+ret 0
+end
+ret ret01 regok fld w 0
+end
+if eq and w 528482304 318767104
+ret ret01 and regok fld w 0 regok fld w 5
+end
+ret 2
+end
+fn ret01 b bool to ulong
+if b
+ret 1
+end
+ret 0
+end
+fn dp2 w ulong to ulong
+if eq and w 2145386496 448790528
+op = and shr w 10 63
+if or or eq op 2 eq op 3 and ge op 8 le op 11
+ret ret01 r3ok w
+end
+ret 0
+end
+if eq and w 520093696 452984832
+if not regok fld w 10
+ret 0
+end
+ret ret01 r3ok w
+end
+if eq and w 534773760 444596224
+ret ret01 r3ok w
+end
+ret 2
+end
+note loads and stores, general registers only (V, bit 26, must be 0): unsigned offset
+note 0x39000000/0x3b000000, register offset 0x38200800/0x3b200c00, unscaled 0x38000000/0x3b200000 with
+note bits 11:10 = 00 (post/pre-index writeback and unprivileged forms refused). Pair, literal,
+note exclusive and atomic forms match none of these and are refused.
+fn ldst w ulong to ulong
+v = and shr w 26 1
+if eq and w 989855744 956301312
+ret ret01 and eq v 0 and regok fld w 0 regok fld w 5
+end
+if eq and w 991955968 941623296
+ret ret01 and eq v 0 r3ok w
+end
+if eq and w 991952896 939524096
+if ne and shr w 10 3 0
+ret 0
+end
+ret ret01 and eq v 0 and regok fld w 0 regok fld w 5
+end
+ret 2
+end
+fn br w ulong i ulong n ulong to ulong
+if eq and w 2080374784 335544320
+ret ret01 tgtok i sext and w 67108863 26 n
+end
+if eq and w 4278190096 1409286144
+ret ret01 tgtok i sext and shr w 5 524287 19 n
+end
+if eq and w 2113929216 872415232
+ret ret01 and regok fld w 0 tgtok i sext and shr w 5 524287 19 n
+end
+if eq and w 2113929216 905969664
+ret ret01 and regok fld w 0 tgtok i sext and shr w 5 16383 14 n
+end
+if eq w 3596551104
+ret 1
+end
+if eq w 3592356352
+if eq i 0
+ret 0
+end
+ret ret01 eq w32 sub i 1 4181723376
+end
+ret 2
+end
+fn word w ulong i ulong n ulong to ulong
+r = dp w
+if ne r 2
+ret r
+end
+r = dp2 w
+if ne r 2
+ret r
+end
+r = ldst w
+if ne r 2
+ret r
+end
+r = br w i n
+if eq r 2
+ret 0
+end
+ret r
+end
+note decimal of v into outb from o, returns the new end
+fn putdec v ulong o ulong to ulong
+t = new uchar 20 0
+k = ulong 0
+x = v
+while true bound 21
+put t k uchar add 48 rem x 10
+k = add k 1
+x = div x 10
+if eq x 0
+break
+end
+end
+p = o
+while gt k 0 bound 21
+k = sub k 1
+put outb p get t k
+p = add p 1
+end
+ret p
+end
+fn puttxt o ulong s view uchar 64 n ulong to ulong
+for k ulong n
+put outb add o k get s k
+end
+ret add o n
+end
+text tpass "KCHECK PASS words="
+text tstk " stack="
+text tfail "KCHECK FAIL word="
+text thex " hex="
+text twhy " why="
+fn emit n ulong to void
+w = write 1 outb 0 n
+end
+fn main to int
+got = ulong 0
+while true bound 300000
+k = read 0 code got sub 1048576 got
+if lt k 0
+exit 2
+end
+if eq k 0
+break
+end
+got = add got ulong k
+end
+if or eq got 0 ne and got 3 0
+exit 3
+end
+n = div got 4
+put st 1 0
+for i ulong n
+w = w32 i
+if eq word w i n 0
+p = ulong 0
+for c ulong 17
+put outb c get tfail c
+end
+p = putdec i 17
+for c ulong 5
+put outb add p c get thex c
+end
+p = add p 5
+p = putdec w p
+put outb p 10
+emit add p 1
+exit 1
+end
+end
+if gt get st 1 4096
+for c ulong 17
+put outb c get tfail c
+end
+p = putdec n 17
+put outb p 10
+emit add p 1
+exit 1
+end
+for c ulong 18
+put outb c get tpass c
+end
+p = putdec n 18
+for c ulong 7
+put outb add p c get tstk c
+end
+p = putdec get st 1 add p 7
+put outb p 10
+emit add p 1
+ret 0
+end

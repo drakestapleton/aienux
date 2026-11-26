@@ -1,0 +1,240 @@
+note SPDX-License-Identifier: MIT OR GPL-2.0-only
+note rmchk: check GSP-RM's stage-C replies (as om/mqget.om copied them into kmod d->msg_rx: element
+note header 0..47, rpc header 48..79, payload from 80; a control's params from 120) and decide the
+note values the kernel takes from them. Every value that depends on GSP-RM is read here at run time and
+note a mismatch is a named refusal, never a guess (docs/STAGE-C.md).
+note Call: agpu_rm_check op m a. m = the 65536-byte reply. a = 64 u64 words, inputs and outputs per op.
+note Result 0 accept (or the op's own small result), or 1000000 plus the refusal code below.
+note op 1 reply: a0 expected function, a1 expected sequence, a2 minimum payload bytes. Result 1: not this
+note   reply (another function or sequence: the caller handles it as an event); 2: rpc_result != 0;
+note   3: the RPC's status field != 0 (GSP_RM_ALLOC @16, GSP_RM_CONTROL @12, FREE @12 of the payload,
+note   rpc.c:11236-11241, 10978-11060, 11311-11354); 0 accept. Out a8 function, a9 rpc_result,
+note   a10 rpc_result_private, a11 status. Refusal 1: the RPC length is shorter than a2 + 32.
+note op 2 SET_GUEST_SYSTEM_INFO reply: rpc_result_private 0 and vgxVersion 0x2B (43) / 0x13 (19)
+note   (vgpu_version.h:33-34; rpc.c:8752-8790), else refusal 2. Out a0 major, a1 minor.
+note op 3 GspStaticConfigInfo (1792 bytes at 80): refusal 3 shorter, 4 an internal handle is 0
+note   (hInternalClient @1728, hInternalDevice @1732, hInternalSubdevice @1736), 5 two are equal.
+note   Out a0 client, a1 device, a2 subdevice.
+note op 4 FIFO_GET_DEVICE_INFO_TABLE reply (3212 bytes at 120: baseIndex @0, numEntries @4, bMore @8,
+note   entries[32] @12, 100 bytes each, engineData[16] @0): looks for GR0, engineData[2] (RM_ENGINE_TYPE)
+note   = 1 with engineData[12] (IS_HOST_DRIVEN_ENGINE) != 0 (engine_info.h:37-99). a6 = baseIndex sent.
+note   Out a0 found, a1 runlist (engineData[3]), a2 bMore, a3 numEntries, a4 CHRAM_PRI_BASE [14],
+note   a5 RUNLIST_PRI_BASE [11]. Refusal 6 numEntries > 32 or baseIndex not echoed, 7 runlist above 127
+note   (doorbell RUNLIST_ID 22:16 is 7 bits on GB20B, gb202/dev_vm.h:29; om/rmarg.om op 4 builds the token).
+note op 5 INTERNAL_FIFO_GET_NUM_CHANNELS reply {runlistId, numChannels}: a0 runlist sent; refusal 8 when
+note   runlistId is not echoed or numChannels is not 1..4096 (ChID VECTOR 11:0). Out a1 numChannels.
+note op 6 CE_GET_FAULT_METHOD_BUFFER_SIZE reply {size}: refusal 9 unless 1..16777216. Out a0 size.
+note op 7 INTERNAL_STATIC_KGR_GET_CONTEXT_BUFFERS_INFO reply (GR0 = engineContextBuffersInfo[0]: 26
+note   {size, alignment} at 120 + 8 id): a10 = max subcontexts (op 8). Main (id 0 GRAPHICS) 4096..64 MiB,
+note   patch (id 16 GRAPHICS_PATCH) 1..64 MiB, priv access map (id 24) 0..16 MiB, every alignment 0 or a
+note   power of two up to 2 MiB, else refusal 10; a10 outside 1..64 is refusal 11. Out a0 main bytes =
+note   align4k(size) + 4096 * a10 (kgraphicsGetMainCtxBufferSize, kernel_graphics.c:1743-1776),
+note   a1 main align, a2 patch bytes, a3 patch align, a4 access map bytes, a5 access map align.
+note op 8 INTERNAL_STATIC_KGR_GET_INFO reply: GR0 infoList[0x2C MAX_SUBCONTEXT_COUNT].data at 120 + 352
+note   + 4; refusal 11 unless 1..64. Out a0.
+note op 9 GPU_GET_CLASSLIST_V2 reply {numClasses, classList[200]}: refusal 6 numClasses > 200, 12 no
+note   known compute or GPFIFO class. Out a0 compute class (0xcec0 BLACKWELL_COMPUTE_B, else 0xcdc0
+note   BLACKWELL_COMPUTE_A), a1 GPFIFO class (0xca6f BLACKWELL_CHANNEL_GPFIFO_B, else 0xc96f _A).
+note Decimal constants (aien-calc receipts in docs/calc-receipts, listed in docs/STATUS.md): 52928 = 0xcec0, 52672 = 0xcdc0, 51823 = 0xca6f, 51567 = 0xc96f,
+note 67108864 = 64 MiB, 16777216 = 16 MiB, 2097152 = 2 MiB.
+fn r32 m view uchar 65536 o ulong to ulong
+x = or ulong get m o shl ulong get m add o 1 8
+y = or shl ulong get m add o 2 16 shl ulong get m add o 3 24
+ret or x y
+end
+fn reply m view uchar 65536 a edit ulong 64 to ulong
+f = r32 m 60
+put a 8 f
+put a 9 r32 m 64
+put a 10 r32 m 68
+put a 11 0
+if or ne f get a 0 ne r32 m 72 get a 1
+ret 1
+end
+if lt r32 m 56 add 32 get a 2
+ret 1000001
+end
+if ne get a 9 0
+ret 2
+end
+s = ulong 0
+if eq f 103
+s = r32 m 96
+end
+if or eq f 76 eq f 10
+s = r32 m 92
+end
+put a 11 s
+if ne s 0
+ret 3
+end
+ret 0
+end
+fn vers m view uchar 65536 a edit ulong 64 to ulong
+put a 0 r32 m 80
+put a 1 r32 m 84
+if ne r32 m 68 0
+ret 1000002
+end
+if or ne get a 0 43 ne get a 1 19
+ret 1000002
+end
+ret 0
+end
+fn stat3 m view uchar 65536 a edit ulong 64 to ulong
+if lt r32 m 56 1824
+ret 1000003
+end
+c = r32 m 1808
+d = r32 m 1812
+s = r32 m 1816
+put a 0 c
+put a 1 d
+put a 2 s
+if or eq c 0 or eq d 0 eq s 0
+ret 1000004
+end
+if or eq c d or eq c s eq d s
+ret 1000005
+end
+ret 0
+end
+note engineData[k] of device-info entry i
+fn ed m view uchar 65536 i ulong k ulong to ulong
+ret r32 m add add 132 mul i 100 mul k 4
+end
+fn devinfo m view uchar 65536 a edit ulong 64 to ulong
+n = r32 m 124
+if or gt n 32 ne r32 m 120 get a 6
+ret 1000006
+end
+put a 0 0
+put a 2 ulong get m 128
+put a 3 n
+i = ulong 0
+while lt i n bound 32
+if and eq ed m i 2 1 ne ed m i 12 0
+put a 0 1
+put a 1 ed m i 3
+put a 4 ed m i 14
+put a 5 ed m i 11
+if gt get a 1 127
+ret 1000007
+end
+ret 0
+end
+i = add i 1
+end
+ret 0
+end
+fn nchan m view uchar 65536 a edit ulong 64 to ulong
+n = r32 m 124
+put a 1 n
+if or ne r32 m 120 get a 0 or eq n 0 gt n 4096
+ret 1000008
+end
+ret 0
+end
+fn alignok v ulong to bool
+if eq v 0
+ret true
+end
+if gt v 2097152
+ret false
+end
+ret eq and v sub v 1 0
+end
+fn ctxinfo m view uchar 65536 a edit ulong 64 to ulong
+ms = get a 10
+if or eq ms 0 gt ms 64
+ret 1000011
+end
+s = r32 m 120
+p = r32 m 248
+q = r32 m 312
+if or lt s 4096 gt s 67108864
+ret 1000010
+end
+if or eq p 0 or gt p 67108864 gt q 16777216
+ret 1000010
+end
+if not and alignok r32 m 124 alignok r32 m 252
+ret 1000010
+end
+if not alignok r32 m 316
+ret 1000010
+end
+put a 0 add and add s 4095 18446744073709547520 mul 4096 ms
+put a 1 r32 m 124
+put a 2 p
+put a 3 r32 m 252
+put a 4 q
+put a 5 r32 m 316
+ret 0
+end
+fn grinfo m view uchar 65536 a edit ulong 64 to ulong
+v = r32 m 476
+put a 0 v
+if or eq v 0 gt v 64
+ret 1000011
+end
+ret 0
+end
+fn classes m view uchar 65536 a edit ulong 64 to ulong
+n = r32 m 120
+if gt n 200
+ret 1000006
+end
+put a 0 0
+put a 1 0
+i = ulong 0
+while lt i n bound 200
+c = r32 m add 124 mul i 4
+if or eq c 52928 and eq c 52672 eq get a 0 0
+put a 0 c
+end
+if or eq c 51823 and eq c 51567 eq get a 1 0
+put a 1 c
+end
+i = add i 1
+end
+if or eq get a 0 0 eq get a 1 0
+ret 1000012
+end
+ret 0
+end
+fn agpu_rm_check op ulong m view uchar 65536 a edit ulong 64 to ulong
+if eq op 1
+ret reply m a
+end
+if eq op 2
+ret vers m a
+end
+if eq op 3
+ret stat3 m a
+end
+if eq op 4
+ret devinfo m a
+end
+if eq op 5
+ret nchan m a
+end
+if eq op 6
+v = r32 m 120
+put a 0 v
+if or eq v 0 gt v 16777216
+ret 1000009
+end
+ret 0
+end
+if eq op 7
+ret ctxinfo m a
+end
+if eq op 8
+ret grinfo m a
+end
+if eq op 9
+ret classes m a
+end
+ret 1000013
+end

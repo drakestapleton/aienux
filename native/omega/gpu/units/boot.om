@@ -1,0 +1,438 @@
+note SPDX-License-Identifier: MIT OR GPL-2.0-only
+note boot: the GB20B GSP start-up (12 register steps) as a step machine. Omega decides every register
+note access; the kernel glue only performs the one action it is handed and calls again.
+note The chip in the DGX Spark reports PMC_BOOT_42 0x1bba1000: architecture 0x1b, implementation 0xb,
+note which NVIDIA's driver dispatches as GB20B (open-gpu-kernel-modules 580.173.02, MIT,
+note generated/g_kernel_sec2_nvoc.c:674-953). Steps 0 and 6 are the GB20B HALs; the rest is shared with
+note GB10B. The C reference of this unit is tests/host/gb20b_mmio.c (same register order, checked on
+note tests/host/gb20b_sim.c by tests/host/parity_boot.c). Sources per step:
+note 0 wait FWSEC done: PMC scratch 0x5e0 == 0xff (ksec2WaitForSecureBoot_GB20B, kernel_sec2_gb20b.c:541-575),
+note 1 wait SEC2 EMEM channel 0 empty (QUEUE_HEAD == QUEUE_TAIL), 2-4 write the packet through EMEMC/EMEMD
+note with auto-increment and check the write pointer, 5 QUEUE_TAIL then QUEUE_HEAD (doorbell)
+note (ksec2SendPacket_GB10B, the HAL GB20B also takes, g_kernel_sec2_nvoc.c:802-804),
+note 6 wait for the SEC2 reply (MSGQ_HEAD != MSGQ_TAIL), read it through EMEMC/EMEMD with read
+note auto-increment, acknowledge it (MSGQ_TAIL = head, then MSGQ_HEAD = head) and check it: one MCTP
+note packet, vendor-defined PCI message 0x7e, vendor 0x10de, NVDM type SEC2_RESPONSE 0x15 or SMBPBI 0x18,
+note error code 0 (ksec2SendBootCommands_GB20B :1034, ksec2SendAndReadMessage_IMPL kernel_sec2.c:496-523,
+note ksec2ReadPacket_GB20B :481-537, ksec2GetPacketInfo_GB20B :235-281, ksec2ProcessCommandResponse_GB20B
+note :385-418). GB10B instead polls SEC2 MAILBOX0 for 0xc001cafe; GB20B never reads that register.
+note 7 wait GSP HWCFG2 mask released, 8 wait lockdown released or an
+note FMC code, 9 GSP MAILBOX0 must be 0, 10 FALCON_OS = appVersion, 11 RISC-V CPUCTL ACTIVE (bit 7).
+note
+note st (32 ulong, caller zeroes it and sets the inputs):
+note   0 pc (0 = start)  1 packet bytes 1..1024  2 FMC boot-argument address  3 appVersion
+note   4..7 poll budgets: 4 steps 0 and 1, 5 step 6, 6 step 7, 7 step 8   8 poll counter
+note   9 packet byte index, then reply dword index   10 EMEM start, then EMEMC after the reply read
+note   11 SEC2 QUEUE_HEAD read in step 1, then MSGQ_HEAD
+note   12 stage: 0 ok, 1 arg, 2 busy, 3 emem, 4 sec2 (no reply), 5 mask, 6 lockdown, 7 fmc, 8 riscv,
+note      9 secure boot not done, 10 reply refused (31 says why), 11 SEC2 reported an error (19)
+note   13..16 polls used by steps 1, 6, 7, 8   17 dwords   18 EMEMC after the packet write
+note   19 reply error code   20 reply bytes   21 HWCFG2   22 GSP MAILBOX0   23 GSP MAILBOX1   24 CPUCTL
+note   25 polls used by step 0   26 reply command type   27 PMC scratch as last read
+note   28 reply dword 0 (MCTP)   29 reply dword 1 (message header)   30 reply task id
+note   31 reply refusal: 1 size, 2 read pointer, 3 not one packet, 4 message type, 5 vendor,
+note      6 NVDM type, 7 too short
+note act (4 ulong) written on result 0: 0 kind (1 read, 2 write, 3 pause between polls), 1 BAR0 offset,
+note   2 value to write. obs = the value the previous read returned (0 after a write or a pause).
+note Result: 0 = do act and call again, 1 = finished (st 12 holds the stage).
+note Register offsets in decimal (aien-calc receipts in docs/STATUS.md):
+note PMC SCRATCH_RESET_PLUS_2 0x5e0 = 1504; SEC2 EMEMC0 0x840ac0 = 8653504, EMEMD0 0x840ac4 = 8653508,
+note QHEAD0 0x840c00 = 8653824, QTAIL0 0x840c04 = 8653828, MSGQ_HEAD0 0x840c80 = 8653952,
+note MSGQ_TAIL0 0x840c84 = 8653956; GSP MAILBOX0 0x110040, MAILBOX1 0x110044, FALCON_OS 0x110080,
+note HWCFG2 0x1100f4, RISC-V CPUCTL 0x111388. EMEMC bit 24 0x1000000 = 16777216 write auto-increment,
+note bit 25 0x2000000 = 33554432 read auto-increment; locked 0xbadf4100 under mask 0xffffff00,
+note lockdown bit 13, active bit 7. omc befb8199 refuses `const` in function mode
+note (error 9 at end of input), so these appear below as decimal literals.
+fn bact act edit ulong 4 kind ulong off ulong val ulong to ulong
+put act 0 kind
+put act 1 off
+put act 2 val
+ret 0
+end
+fn bfin st edit ulong 32 stage ulong to ulong
+put st 12 stage
+put st 0 99
+ret 1
+end
+note EMEMC: block 15:8 times 64 dwords plus offset 7:2 (gsp_mmio.c emem_dwords).
+fn ememdw v ulong to ulong
+ret add mul and shr v 8 255 64 and shr v 2 63
+end
+note Little-endian dword of packet bytes i..i+3, zero beyond the packet length n.
+fn pword pkt view uchar 1024 i ulong n ulong to ulong
+w = ulong 0
+for k ulong 4
+if lt add i k n
+w = or w shl ulong get pkt add i k mul k 8
+end
+end
+ret w
+end
+note Step 0: FWSEC finished the secure boot: PMC scratch 0x5e0 reads exactly 0xff. pc 1 read, 2 decide.
+fn bstep0 st edit ulong 32 obs ulong act edit ulong 4 to ulong
+pc = get st 0
+if eq pc 1
+put st 0 2
+ret bact act 1 1504 0
+end
+put st 27 obs
+n = get st 8
+if eq obs 255
+put st 25 n
+put st 8 0
+put st 0 10
+ret 2
+end
+if ge n get st 4
+put st 25 n
+ret bfin st 9
+end
+put st 8 add n 1
+put st 0 1
+ret bact act 3 0 0
+end
+note Step 1: SEC2 channel empty. pc 10 read HEAD, 11 read TAIL, 12 compare.
+fn bstep1 st edit ulong 32 obs ulong act edit ulong 4 to ulong
+pc = get st 0
+if eq pc 10
+put st 0 11
+ret bact act 1 8653824 0
+end
+if eq pc 11
+put st 11 obs
+put st 0 12
+ret bact act 1 8653828 0
+end
+n = get st 8
+if eq get st 11 obs
+put st 13 n
+put st 8 0
+put st 0 20
+ret 2
+end
+if ge n get st 4
+put st 13 n
+ret bfin st 2
+end
+put st 8 add n 1
+put st 0 10
+ret bact act 3 0 0
+end
+note Steps 2-5: packet into EMEM, write pointer check, TAIL then HEAD.
+fn bstep2 st edit ulong 32 pkt view uchar 1024 obs ulong act edit ulong 4 to ulong
+pc = get st 0
+if eq pc 20
+put st 0 21
+ret bact act 2 8653504 16777216
+end
+if eq pc 21
+put st 0 22
+ret bact act 1 8653504 0
+end
+if eq pc 22
+put st 10 ememdw obs
+put st 9 0
+put st 0 23
+end
+pc = get st 0
+n = get st 1
+i = get st 9
+if eq pc 23
+if lt i n
+put st 9 add i 4
+ret bact act 2 8653508 pword pkt i n
+end
+put st 0 25
+ret bact act 1 8653504 0
+end
+if eq pc 25
+dw = div add n 3 4
+put st 17 dw
+put st 18 obs
+if ne sub ememdw obs get st 10 dw
+ret bfin st 3
+end
+put st 0 26
+ret bact act 2 8653828 sub mul dw 4 4
+end
+put st 8 0
+put st 0 30
+ret bact act 2 8653824 0
+end
+note Step 6: SEC2 replied: MSGQ_HEAD != MSGQ_TAIL. pc 30 read HEAD, 31 read TAIL, 32 compare.
+fn bstep6 st edit ulong 32 obs ulong act edit ulong 4 to ulong
+pc = get st 0
+if eq pc 30
+put st 0 31
+ret bact act 1 8653952 0
+end
+if eq pc 31
+put st 11 obs
+put st 0 32
+ret bact act 1 8653956 0
+end
+n = get st 8
+if ne get st 11 obs
+put st 14 n
+put st 8 0
+put st 0 70
+ret 2
+end
+if ge n get st 5
+put st 14 n
+ret bfin st 4
+end
+put st 8 add n 1
+put st 0 30
+ret bact act 3 0 0
+end
+note Step 6, the check after the acknowledgement, in the driver's order: read pointer, packet state
+note with the header checks of a first packet, one packet only, NVDM type, length, error code.
+note The `lt sz 8` check is the driver's (kernel_sec2_gb20b.c:329-333) and is never taken here: under
+note 8 bytes only dword 0 was read, st 29 is 0 and the message-type check has already refused.
+fn brspchk st edit ulong 32 to ulong
+sz = get st 20
+if ne ememdw get st 10 div sz 4
+put st 31 2
+ret bfin st 10
+end
+d0 = get st 28
+d1 = get st 29
+som = and shr d0 31 1
+eom = and shr d0 30 1
+if eq som 1
+if ne and d1 127 126
+put st 31 4
+ret bfin st 10
+end
+if ne and shr d1 8 65535 4318
+put st 31 5
+ret bfin st 10
+end
+if lt sz 8
+put st 31 7
+ret bfin st 10
+end
+end
+if or ne som 1 ne eom 1
+put st 31 3
+ret bfin st 10
+end
+t = and shr d1 24 255
+if and ne t 21 ne t 24
+put st 31 6
+ret bfin st 10
+end
+if lt sz 20
+put st 31 7
+ret bfin st 10
+end
+if ne get st 19 0
+ret bfin st 11
+end
+put st 8 0
+put st 0 40
+ret 2
+end
+note Step 6, the reply itself. pc 70 read HEAD, 71 read TAIL, 72 size and EMEMC, 73/74 the dwords,
+note 75 EMEMC back, 76 TAIL = head, 77 HEAD = head, then the check. Tail points at the last dword.
+fn brsp st edit ulong 32 obs ulong act edit ulong 4 to ulong
+pc = get st 0
+if eq pc 70
+put st 0 71
+ret bact act 1 8653952 0
+end
+if eq pc 71
+put st 11 obs
+put st 0 72
+ret bact act 1 8653956 0
+end
+if eq pc 72
+sz = and sub add add obs 4294967296 4 get st 11 4294967295
+put st 20 sz
+if or lt sz 4 gt sz 1024
+put st 31 1
+ret bfin st 10
+end
+put st 9 0
+put st 0 73
+ret bact act 2 8653504 33554432
+end
+if eq pc 74
+i = get st 9
+if lt i 3
+put st add 28 i obs
+end
+if eq i 3
+put st 26 obs
+end
+if eq i 4
+put st 19 obs
+end
+put st 9 add i 1
+put st 0 73
+end
+pc = get st 0
+if eq pc 73
+if lt get st 9 div get st 20 4
+put st 0 74
+ret bact act 1 8653508 0
+end
+put st 0 75
+ret bact act 1 8653504 0
+end
+if eq pc 75
+put st 10 obs
+put st 0 76
+ret bact act 2 8653956 get st 11
+end
+if eq pc 76
+put st 0 77
+ret bact act 2 8653952 get st 11
+end
+ret brspchk st
+end
+note Step 7: GSP target mask released: HWCFG2 non-zero and not 0xbadf41xx.
+fn bstep7 st edit ulong 32 obs ulong act edit ulong 4 to ulong
+pc = get st 0
+if eq pc 40
+put st 0 41
+ret bact act 1 1114356 0
+end
+put st 21 obs
+n = get st 8
+if and ne obs 0 ne and obs 4294967040 3135193344
+put st 15 n
+put st 8 0
+put st 0 50
+ret 2
+end
+if ge n get st 6
+put st 15 n
+ret bfin st 5
+end
+put st 8 add n 1
+put st 0 40
+ret bact act 3 0 0
+end
+note Step 8 continued: not released yet; budget check, then pause or give up.
+fn bwait8 st edit ulong 32 act edit ulong 4 to ulong
+n = get st 8
+if ge n get st 7
+put st 16 n
+put st 0 56
+ret bact act 1 1114180 0
+end
+put st 8 add n 1
+put st 0 50
+ret bact act 3 0 0
+end
+note Step 8: lockdown released or an FMC code. MAILBOX0:MAILBOX1 equal to the FMC argument address
+note means not read yet (keep waiting, HWCFG2 not read on that pass, as the driver).
+fn bstep8 st edit ulong 32 obs ulong act edit ulong 4 to ulong
+pc = get st 0
+pa = get st 2
+if eq pc 50
+put st 0 51
+ret bact act 1 1114176 0
+end
+if eq pc 56
+put st 23 obs
+ret bfin st 6
+end
+if eq pc 51
+put st 22 obs
+if and ne obs 0 eq obs and pa 4294967295
+put st 0 52
+ret bact act 1 1114180 0
+end
+put st 0 53
+ret bact act 1 1114356 0
+end
+if eq pc 52
+put st 23 obs
+if eq obs shr pa 32
+ret bwait8 st act
+end
+put st 0 53
+ret bact act 1 1114356 0
+end
+put st 21 obs
+if or eq and obs 8192 0 ne get st 22 0
+put st 16 get st 8
+put st 0 60
+ret bact act 1 1114176 0
+end
+ret bwait8 st act
+end
+note Steps 9-11: FMC error check, FALCON_OS, RISC-V active.
+fn bstep9 st edit ulong 32 obs ulong act edit ulong 4 to ulong
+pc = get st 0
+if eq pc 60
+put st 22 obs
+if ne obs 0
+ret bfin st 7
+end
+put st 0 62
+ret bact act 2 1114240 and get st 3 4294967295
+end
+if eq pc 62
+put st 0 63
+ret bact act 1 1119112 0
+end
+put st 24 obs
+if eq and obs 128 0
+ret bfin st 8
+end
+ret bfin st 0
+end
+note Entry. Each call runs at most a few internal transitions (helpers return 2) before an action.
+fn agpu_boot_next st edit ulong 32 pkt view uchar 1024 obs ulong act edit ulong 4 to ulong
+if eq get st 0 0
+for k ulong 24
+put st add k 8 0
+end
+n = get st 1
+if or eq n 0 gt n 1024
+ret bfin st 1
+end
+put st 0 1
+end
+r = ulong 2
+while eq r 2 bound 8
+pc = get st 0
+if eq pc 99
+ret 1
+end
+if lt pc 10
+r = bstep0 st obs act
+else
+if lt pc 20
+r = bstep1 st obs act
+else
+if lt pc 30
+r = bstep2 st pkt obs act
+else
+if lt pc 40
+r = bstep6 st obs act
+else
+if lt pc 50
+r = bstep7 st obs act
+else
+if lt pc 60
+r = bstep8 st obs act
+else
+if lt pc 70
+r = bstep9 st obs act
+else
+r = brsp st obs act
+end
+end
+end
+end
+end
+end
+end
+end
+ret r
+end

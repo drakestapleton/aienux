@@ -1,0 +1,158 @@
+note SPDX-License-Identifier: MIT OR GPL-2.0-only
+note rmchan: build GSP_RM_ALLOC of the GPFIFO channel (NV_CHANNEL_ALLOC_PARAMS, 368 bytes) into the
+note staging buffer at byte 80 (op 9 of om/rm.om, a unit of its own for the kcheck stack budget).
+note Call: agpu_rm_chan op m a (op 9 only); same contract and refusal codes as om/rm.om.
+note Decimal constants (Wolfram):
+note 4294967295 = 0xffffffff, 2097152 = 1 << 21 (NVOS04_FLAGS_CHANNEL_USERD_INDEX_PAGE_FIXED_TRUE).
+fn p32 m edit uchar 65536 o ulong v ulong to void
+put m o uchar and v 255
+put m add o 1 uchar and shr v 8 255
+put m add o 2 uchar and shr v 16 255
+put m add o 3 uchar and shr v 24 255
+end
+fn p64 m edit uchar 65536 o ulong v ulong to void
+p32 m o and v 4294967295
+p32 m add o 4 shr v 32
+end
+fn zero m edit uchar 65536 o ulong n ulong to void
+k = ulong 0
+while lt k n bound 65536
+put m add o k 0
+k = add k 1
+end
+end
+note a[i..i+n) all fit 32 bits
+fn fits a edit ulong 64 i ulong n ulong to bool
+k = ulong 0
+while lt k n bound 64
+if gt get a add i k 4294967295
+ret false
+end
+k = add k 1
+end
+ret true
+end
+fn nonzero a edit ulong 64 i ulong n ulong to bool
+k = ulong 0
+while lt k n bound 64
+if eq get a add i k 0
+ret false
+end
+k = add k 1
+end
+ret true
+end
+fn done a edit ulong 64 fnum ulong rlen ulong placed ulong to ulong
+put a 48 fnum
+put a 49 rlen
+put a 50 placed
+ret 0
+end
+note NV_MEMORY_DESC_PARAMS at o: base, size, addressSpace 1 (ADDR_SYSMEM), cacheAttrib
+fn mdesc m edit uchar 65536 o ulong base ulong size ulong cache ulong to void
+p64 m o base
+p64 m add o 8 size
+p32 m add o 16 1
+p32 m add o 20 cache
+end
+note rpc_gsp_rm_alloc_v03_00 at 80: hClient, hParent, hObject, hClass, status 0, paramsSize, flags 0
+fn ahdr m edit uchar 65536 h1 ulong h2 ulong h3 ulong cls ulong psize ulong to void
+zero m 80 add 32 psize
+p32 m 80 h1
+p32 m 84 h2
+p32 m 88 h3
+p32 m 92 cls
+p32 m 100 psize
+end
+fn pow2ok n ulong to bool
+if or lt n 8 gt n 65536
+ret false
+end
+ret eq and n sub n 1 0
+end
+note channel inputs (a): 0 hClient 1 hTsg 2 hChan 3 class 4 hObjectError 5 ring VA 6 entries 7 chid
+note 8 hCtx 9 hVas 10 hUserd 11 userdOff 12 inst iova 13 userd iova 14 userd cache 15 mthd iova
+note 16 mthd size 17 err iova 18 err size 19 err cache 20 pid 21 privilege (0 user, 1 admin, 2 kernel)
+fn chanok a edit ulong 64 to ulong
+if not nonzero a 0 5
+ret 1000002
+end
+if or eq get a 8 0 eq get a 10 0
+ret 1000002
+end
+if not fits a 0 5
+ret 1000003
+end
+if not fits a 8 3
+ret 1000003
+end
+if or gt get a 20 4294967295 gt get a 21 2
+ret 1000003
+end
+if not pow2ok get a 6
+ret 1000005
+end
+if gt get a 7 4095
+ret 1000006
+end
+ret 0
+end
+fn chanal a edit ulong 64 to ulong
+if or ne and get a 5 7 0 ne and get a 11 511 0
+ret 1000004
+end
+if or ne and get a 12 4095 0 ne and get a 13 511 0
+ret 1000004
+end
+if or ne and get a 15 4095 0 eq get a 16 0
+ret 1000004
+end
+if or ne and get a 17 3 0 lt get a 18 16
+ret 1000004
+end
+if or gt get a 14 1 gt get a 19 1
+ret 1000007
+end
+ret 0
+end
+note NV_CHANNEL_ALLOC_PARAMS (368) at 112, as _kchannelSendChannelAllocRpc (kernel_channel.c:2665-2846)
+note fills it for a GSP client: hObjectBuffer 0, flags = USERD_INDEX_VALUE chid % 8 (10:8),
+note USERD_INDEX_PAGE_VALUE chid / 8 (20:12), USERD_INDEX_PAGE_FIXED 1 (21:21), runqueue 0;
+note internalFlags = PRIVILEGE (1:0) | ERROR_NOTIFIER_TYPE_MEMORY 3 (3:2) | ECC_ERROR_NOTIFIER_TYPE_NONE 1 (5:4).
+fn chanput m edit uchar 65536 a edit ulong 64 to void
+p32 m 112 get a 4
+p64 m 120 get a 5
+p32 m 128 get a 6
+c = get a 7
+p32 m 132 or or shl rem c 8 8 shl div c 8 12 2097152
+p32 m 136 get a 8
+p32 m 140 get a 9
+p32 m 144 get a 10
+p64 m 176 get a 11
+mdesc m 256 get a 12 4096 0
+mdesc m 280 get a 13 512 get a 14
+mdesc m 304 get a 12 512 0
+mdesc m 328 get a 15 get a 16 0
+p32 m 356 or get a 21 28
+mdesc m 360 get a 17 get a 18 get a 19
+p32 m 408 get a 20
+end
+fn achan m edit uchar 65536 a edit ulong 64 to ulong
+r = chanok a
+if ne r 0
+ret r
+end
+r = chanal a
+if ne r 0
+ret r
+end
+ahdr m get a 0 get a 1 get a 2 get a 3 368
+chanput m a
+ret done a 103 32 400
+end
+fn agpu_rm_chan op ulong m edit uchar 65536 a edit ulong 64 to ulong
+if ne op 9
+ret 1000001
+end
+ret achan m a
+end

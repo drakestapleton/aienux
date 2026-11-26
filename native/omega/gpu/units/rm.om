@@ -1,0 +1,219 @@
+note SPDX-License-Identifier: MIT OR GPL-2.0-only
+note rm: build one stage-C GSP-RM RPC payload into the staging buffer (kmod d->msg_tx) at byte 80,
+note from scalar inputs. om/seal.om then adds the element and RPC headers. Layouts are NVIDIA's
+note 580.173.02 structures (MIT headers), offsets as compiled from those headers (docs/STAGE-C.md
+note section 0 and 6; tests/host/parity_rm.c fills the real C structs and compares every byte).
+note Call: agpu_rm_build op m a. m = the 65536-byte staging buffer. a = 64 u64 words: inputs in
+note a[0..47] per op; on success a[48] = RPC function, a[49] = rpclen (bytes the RPC length counts),
+note a[50] = placed (payload bytes present), the result is 0. Refusal = 1000000 plus:
+note 1 unknown op, 2 a handle is 0, 3 a value does not fit its field, 4 an address or offset not
+note aligned, 5 GPFIFO entries not a power of two in 8..65536, 6 ChID above 4095, 7 a cache attribute
+note other than 0 (cached) or 1 (uncached), 8 promote entry count or buffer id out of range,
+note 9 reserved-PDE params not the [4 GiB, 4.5 GiB) 2 MiB shape, 10 control params too large.
+note Hex constants written in decimal (each converted with Wolfram, docs/STAGE-C.md section 6):
+note 4294967295 = 0xffffffff, 2097152 = 0x200000; class ids: 128 = 0x80 NV01_DEVICE_0, 8320 = 0x2080
+note NV20_SUBDEVICE_0, 37105 = 0x90f1 FERMI_VASPACE_A, 41068 = 0xa06c KEPLER_CHANNEL_GROUP_A,
+note 36967 = 0x9067 FERMI_CONTEXT_SHARE_A. The controls are om/rmctl.om, the channel om/rmchan.om.
+fn p32 m edit uchar 65536 o ulong v ulong to void
+put m o uchar and v 255
+put m add o 1 uchar and shr v 8 255
+put m add o 2 uchar and shr v 16 255
+put m add o 3 uchar and shr v 24 255
+end
+fn p64 m edit uchar 65536 o ulong v ulong to void
+p32 m o and v 4294967295
+p32 m add o 4 shr v 32
+end
+fn zero m edit uchar 65536 o ulong n ulong to void
+k = ulong 0
+while lt k n bound 65536
+put m add o k 0
+k = add k 1
+end
+end
+note a[i..i+n) all fit 32 bits
+fn fits a edit ulong 64 i ulong n ulong to bool
+k = ulong 0
+while lt k n bound 64
+if gt get a add i k 4294967295
+ret false
+end
+k = add k 1
+end
+ret true
+end
+fn nonzero a edit ulong 64 i ulong n ulong to bool
+k = ulong 0
+while lt k n bound 64
+if eq get a add i k 0
+ret false
+end
+k = add k 1
+end
+ret true
+end
+fn done a edit ulong 64 fnum ulong rlen ulong placed ulong to ulong
+put a 48 fnum
+put a 49 rlen
+put a 50 placed
+ret 0
+end
+note rpc_gsp_rm_alloc_v03_00 at 80: hClient, hParent, hObject, hClass, status 0, paramsSize, flags 0
+note (op 9, the channel, is om/rmchan.om)
+fn ahdr m edit uchar 65536 h1 ulong h2 ulong h3 ulong cls ulong psize ulong to void
+zero m 80 add 32 psize
+p32 m 80 h1
+p32 m 84 h2
+p32 m 88 h3
+p32 m 92 cls
+p32 m 100 psize
+end
+note four ASCII bytes
+fn ch4 m edit uchar 65536 o ulong b0 ulong b1 ulong b2 ulong b3 ulong to void
+put m o uchar b0
+put m add o 1 uchar b1
+put m add o 2 uchar b2
+put m add o 3 uchar b3
+end
+note op 1 SET_GUEST_SYSTEM_INFO, rpc_set_guest_system_info_v03_00 (792 bytes): vgxVersion 0x2B (43) /
+note 0x13 (19), three 256-byte strings with their buffer length 256, guestClNum 38369854
+note (NV_BUILD_CHANGELIST_NUM, common/inc/nvBldVer.h:47). Strings: "580.173.02" (NV_VERSION_STRING),
+note "rel/gpu_drv/r580/r582_69-609" (NV_BUILD_BRANCH_VERSION), title "aien-gpu" (ours; informational).
+fn sgsi m edit uchar 65536 a edit ulong 64 to ulong
+zero m 80 792
+p32 m 80 43
+p32 m 84 19
+p32 m 88 256
+p32 m 92 256
+p32 m 96 256
+p32 m 100 38369854
+ch4 m 104 53 56 48 46
+ch4 m 108 49 55 51 46
+put m 112 48
+put m 113 50
+ch4 m 360 114 101 108 47
+ch4 m 364 103 112 117 95
+ch4 m 368 100 114 118 47
+ch4 m 372 114 53 56 48
+ch4 m 376 47 114 53 56
+ch4 m 380 50 95 54 57
+ch4 m 384 45 54 48 57
+ch4 m 616 97 105 101 110
+ch4 m 620 45 103 112 117
+ret done a 1 792 792
+end
+note op 3 ROOT: GSP_RM_ALLOC(hClient, 0, hClient, NV01_ROOT 0, NV0000_ALLOC_PARAMETERS 120 bytes:
+note hClient @0, processID @4). a0 hClient, a1 pid.
+fn aroot m edit uchar 65536 a edit ulong 64 to ulong
+h = get a 0
+ahdr m h 0 h 0 120
+p32 m 112 h
+p32 m 116 get a 1
+ret done a 103 32 152
+end
+note op 4 DEVICE: (hClient, hClient, hDevice, 0x80, NV0080_ALLOC_PARAMETERS 56: deviceId @0,
+note hClientShare @4 = hClient, vaMode @48 = 0 OPTIONAL_MULTIPLE_VASPACES). a0 hClient, a1 hDevice, a2 deviceId.
+fn adev m edit uchar 65536 a edit ulong 64 to ulong
+h = get a 0
+ahdr m h h get a 1 128 56
+p32 m 112 get a 2
+p32 m 116 h
+ret done a 103 32 88
+end
+note op 5 SUBDEVICE: (hClient, hDevice, hSub, 0x2080, {subDeviceId}). a0..a3.
+fn asub m edit uchar 65536 a edit ulong 64 to ulong
+ahdr m get a 0 get a 1 get a 2 8320 4
+p32 m 112 get a 3
+ret done a 103 32 36
+end
+note op 6 VASPACE: (hClient, hDevice, hVas, 0x90f1, NV_VASPACE_ALLOCATION_PARAMETERS 56: index 0 GPU_NEW,
+note flags 0 (RM-owned, not IS_EXTERNALLY_OWNED), vaSize @8, vaBase @40 = 0). a0 hClient a1 hDevice
+note a2 hVas a3 vaSize (nonzero, multiple of 2 MiB).
+fn avas m edit uchar 65536 a edit ulong 64 to ulong
+s = get a 3
+if or eq s 0 ne rem s 2097152 0
+ret 1000004
+end
+ahdr m get a 0 get a 1 get a 2 37105 56
+p64 m 120 s
+ret done a 103 32 88
+end
+note op 7 TSG: (hClient, hDevice, hTsg, 0xa06c, NV_CHANNEL_GROUP_ALLOCATION_PARAMETERS 20: hVASpace @8,
+note engineType @12 = 1 NV2080_ENGINE_TYPE_GRAPHICS). a0 hClient a1 hDevice a2 hTsg a3 hVas.
+fn atsg m edit uchar 65536 a edit ulong 64 to ulong
+ahdr m get a 0 get a 1 get a 2 41068 20
+p32 m 120 get a 3
+p32 m 124 1
+ret done a 103 32 52
+end
+note op 8 CTXSHARE: (hClient, hTsg, hCtx, 0x9067, NV_CTXSHARE_ALLOCATION_PARAMETERS 12: hVASpace @0,
+note flags @4 = 1 SUBCONTEXT_ASYNC, subctxId 0). a0 hClient a1 hTsg a2 hCtx a3 hVas.
+fn actx m edit uchar 65536 a edit ulong 64 to ulong
+ahdr m get a 0 get a 1 get a 2 36967 12
+p32 m 112 get a 3
+p32 m 116 1
+ret done a 103 32 44
+end
+note op 10 COMPUTE: (hClient, hChan, hObj, class), no params (the client passes NULL, nvrm.c).
+fn acomp m edit uchar 65536 a edit ulong 64 to ulong
+ahdr m get a 0 get a 1 get a 2 get a 3 0
+ret done a 103 32 32
+end
+fn bld op ulong m edit uchar 65536 a edit ulong 64 to ulong
+if eq op 1
+ret sgsi m a
+end
+if eq op 2
+zero m 80 1792
+ret done a 65 1792 1792
+end
+if eq op 3
+ret aroot m a
+end
+if eq op 4
+ret adev m a
+end
+if eq op 5
+ret asub m a
+end
+if eq op 6
+ret avas m a
+end
+if eq op 7
+ret atsg m a
+end
+if eq op 8
+ret actx m a
+end
+if eq op 10
+ret acomp m a
+end
+ret 1000001
+end
+note Handles: ops 3..10 refuse a 0 handle or one above 32 bits (ops 1 and 2 name none; 9 checks its own).
+fn hok op ulong a edit ulong 64 to ulong
+n = ulong 0
+if or eq op 3 eq op 4
+n = 2
+end
+if or eq op 5 eq op 6
+n = 3
+end
+if or or eq op 7 eq op 8 eq op 10
+n = 4
+end
+if not fits a 0 n
+ret 1000003
+end
+if not nonzero a 0 n
+ret 1000002
+end
+ret 0
+end
+fn agpu_rm_build op ulong m edit uchar 65536 a edit ulong 64 to ulong
+r = hok op a
+if ne r 0
+ret r
+end
+ret bld op m a
+end

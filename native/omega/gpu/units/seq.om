@@ -1,0 +1,115 @@
+note SPDX-License-Identifier: MIT OR GPL-2.0-only
+note seq: check a GSP-RM "run CPU sequencer" request completely before the kernel performs any of it.
+note GSP-RM sends a list of register operations the host must run (kgspExecuteSequencerBuffer,
+note kernel_gsp.c:5297, open-gpu-kernel-modules 580.173.02; opcodes and payload sizes rmgspseq.h
+note GSP_SEQUENCER_PAYLOAD_SIZE_DWORDS). This unit reads the whole received message, refuses anything
+note malformed, and writes a normalized list of operations; the kernel glue then performs the list.
+note Oracle: aien-dev/aienux c9678d7b native/kernel/gpu/gsp_seq.c (tests/host/parity_seq.c).
+note Difference from the oracle and from NVIDIA, on purpose: the whole buffer is checked first, so a bad
+note entry anywhere refuses before the first register write; every register offset must be 4-byte
+note aligned and inside BAR0 (barlen); at most 2048 operations.
+note
+note msg: the message as agpu_mq_get returned it: 48-byte element header, 32-byte RPC header whose
+note length field (offset 56) counts header plus payload, then rpc_run_cpu_sequencer_v17_00:
+note bufferSizeDWord at 80, cmdIndex at 84, regSaveArea[8] at 88, commandBuffer[] at 120.
+note ops: 6 ulong per operation: opcode, then up to 5 payload dwords (unused ones 0).
+note Opcodes: 0 REG_WRITE (addr val), 1 REG_MODIFY (addr mask val), 2 REG_POLL (addr mask val timeout
+note error), 3 DELAY_US (us), 4 REG_STORE (addr index), 5..8 CORE_RESET/START/WAIT/RESUME (no payload).
+note Result: the number of operations (0..2048), or 1000000 plus a refusal code:
+note 1 message too short for the request header, 2 bufferSizeDWord is 0, 3 buffer longer than the message,
+note 4 cmdIndex not inside the buffer, 5 unknown opcode, 6 opcode payload overruns cmdIndex,
+note 7 REG_STORE index 8 or more, 8 register offset unaligned or outside BAR0, 9 more than 2048 operations.
+fn rd32 msg view uchar 65536 o ulong to ulong
+a = or ulong get msg o shl ulong get msg add o 1 8
+b = or shl ulong get msg add o 2 16 shl ulong get msg add o 3 24
+ret or a b
+end
+fn paydw op ulong to ulong
+if eq op 0
+ret 2
+end
+if eq op 1
+ret 3
+end
+if eq op 2
+ret 5
+end
+if eq op 3
+ret 1
+end
+if eq op 4
+ret 2
+end
+if le op 8
+ret 0
+end
+ret 99
+end
+fn regok a ulong barlen ulong to bool
+if ne and a 3 0
+ret false
+end
+ret le add a 4 barlen
+end
+note Check one operation's payload (p = byte offset of its first payload dword) and copy it to ops.
+fn seqop msg view uchar 65536 p ulong op ulong ops edit ulong 12288 k ulong barlen ulong to ulong
+base = mul k 6
+put ops base op
+n = paydw op
+for j ulong 5
+v = ulong 0
+if lt j n
+v = rd32 msg add p mul j 4
+end
+put ops add base add j 1 v
+end
+if and le op 4 ne op 3
+if not regok get ops add base 1 barlen
+ret 8
+end
+end
+if and eq op 4 ge get ops add base 2 8
+ret 7
+end
+ret 0
+end
+fn agpu_seq_check msg view uchar 65536 ops edit ulong 12288 barlen ulong to ulong
+rlen = rd32 msg 56
+if lt rlen 72
+ret 1000001
+end
+nw = rd32 msg 80
+cmdi = rd32 msg 84
+if eq nw 0
+ret 1000002
+end
+if gt add 120 mul nw 4 add 48 rlen
+ret 1000003
+end
+if ge cmdi nw
+ret 1000004
+end
+i = ulong 0
+k = ulong 0
+while lt i cmdi bound 16384
+op = rd32 msg add 120 mul i 4
+i = add i 1
+n = paydw op
+if eq n 99
+ret 1000005
+end
+if gt add i n cmdi
+ret 1000006
+end
+if ge k 2048
+ret 1000009
+end
+e = seqop msg add 120 mul i 4 op ops k barlen
+if ne e 0
+ret add 1000000 e
+end
+k = add k 1
+i = add i n
+end
+ret k
+end

@@ -1,0 +1,102 @@
+note SPDX-License-Identifier: MIT OR GPL-2.0-only
+note rmarg: the stage-C decisions that are not RPC payloads: ChID allocation, AGPU_CHAN_CREATE argument
+note checks and the work-submit token.
+note Call: agpu_rm_arg op bm a. bm = 64 u64 words, the ChID bitmap of GR0's runlist (bit c of word c/64
+note set = ChID c in use; 4096 ChIDs, the doorbell VECTOR field 11:0). a = 64 u64 words.
+note op 1 allocate: a0 = numChannels as GSP-RM reported it (INTERNAL_FIFO_GET_NUM_CHANNELS, read at
+note   run time; 0 = never read). Result the lowest free ChID below a0, now set in bm (CPU-RM allocates
+note   ChIDs, kchannelAllocHwID_GM107, arch/maxwell/kernel_channel_gm107.c:420), or refusal
+note   1 numChannels 0 or above 4096, 2 every ChID in use.
+note op 2 release: a0 numChannels, a1 ChID; result 0, or refusal 3 when the ChID is not below a0 or not
+note   in use.
+note op 3 AGPU_CHAN_CREATE arguments: a0 entries, a1 ring_off, a2 userd_off, a3 ring_handle,
+note   a4 userd_handle, a5 err_handle. Result 0 or refusal 4 entries not a power of two in 8..65536,
+note   5 ring_off not 8-aligned or not below 2^48, 6 userd_off not 512-aligned (USERD is 512 bytes,
+note   kernel_fifo_gm107.c:1545-1555) or not below 2^48, 7 a handle 0 or above 32 bits.
+note op 4 work-submit token: a0 runlist, a1 ChID. Result (runlist << 16) | ChID | bit 30
+note   (kfifoGenerateWorkSubmitTokenHal_GB202, the HAL GB20B takes, generated/g_kernel_fifo_nvoc.c:647;
+note   arch/blackwell/kernel_fifo_gb202.c; DOORBELL RUNLIST_ID 22:16, VECTOR 11:0, RUNLIST_DOORBELL 30:30
+note   with ENABLE = 1, gb202/dev_vm.h:27-32), or refusal 8 runlist above 127 or ChID above 4095 (the
+note   fields are 7 and 12 bits). GB10B takes the GB100 HAL instead: no bit 30, and there bit 22 is
+note   RUNLIST_DOORBELL with DISABLE = 1 (gb100/dev_vm.h:620-628).
+note op 5 unload: a0 = GSP falcon MAILBOX0 (BAR0 0x110040). Result 1 when it is 0x80000000
+note   (LIBOS_INTERRUPT_PROCESSOR_SUSPENDED, _kgspIsProcessorSuspended, kernel_gsp_tu102.c:1226-1240), else 0.
+note op 6 halt: a0 = RISC-V CPUCTL (BAR0 0x111388). Result 1 when HALTED (4:4, gh100/dev_riscv_pri.h:62)
+note   is set, else 0 (kgspTeardown_GH100, kernel_gsp_gh100.c:995-1004).
+note Decimal constants (aien-calc receipts in docs/calc-receipts, listed in docs/STATUS.md):
+note 281474976710656 = 2^48, 4294967295 = 0xffffffff, 2147483648 = 0x80000000, 1073741824 = 2^30.
+fn bit bm edit ulong 64 c ulong to bool
+ret ne and get bm div c 64 shl ulong 1 rem c 64 0
+end
+fn chidal bm edit ulong 64 n ulong to ulong
+if or eq n 0 gt n 4096
+ret 1000001
+end
+c = ulong 0
+while lt c n bound 4096
+if not bit bm c
+w = div c 64
+put bm w or get bm w shl ulong 1 rem c 64
+ret c
+end
+c = add c 1
+end
+ret 1000002
+end
+fn chidrel bm edit ulong 64 n ulong c ulong to ulong
+if or ge c n gt n 4096
+ret 1000003
+end
+if not bit bm c
+ret 1000003
+end
+w = div c 64
+put bm w and get bm w not shl ulong 1 rem c 64
+ret 0
+end
+fn hdlok h ulong to bool
+ret and ne h 0 le h 4294967295
+end
+fn chanarg a edit ulong 64 to ulong
+n = get a 0
+if or or lt n 8 gt n 65536 ne and n sub n 1 0
+ret 1000004
+end
+if or ne and get a 1 7 0 ge get a 1 281474976710656
+ret 1000005
+end
+if or ne and get a 2 511 0 ge get a 2 281474976710656
+ret 1000006
+end
+if not and hdlok get a 3 and hdlok get a 4 hdlok get a 5
+ret 1000007
+end
+ret 0
+end
+fn agpu_rm_arg op ulong bm edit ulong 64 a edit ulong 64 to ulong
+if eq op 1
+ret chidal bm get a 0
+end
+if eq op 2
+ret chidrel bm get a 0 get a 1
+end
+if eq op 3
+ret chanarg a
+end
+if eq op 4
+if or gt get a 0 127 gt get a 1 4095
+ret 1000008
+end
+ret or or shl get a 0 16 get a 1 1073741824
+end
+if eq op 5
+if eq get a 0 2147483648
+ret 1
+end
+ret 0
+end
+if eq op 6
+ret and shr get a 0 4 1
+end
+ret 1000009
+end

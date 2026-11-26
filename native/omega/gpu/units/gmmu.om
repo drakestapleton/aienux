@@ -1,0 +1,214 @@
+note SPDX-License-Identifier: MIT OR GPL-2.0-only
+note gmmu: GB10B GPU page-table entries, VA index math, the walk plan and the TLB invalidate register
+note values. The kernel glue (kmod/aien_gpu_mem.c) allocates page-table pages and stores what this unit
+note returns; it decides nothing itself.
+note Sources (open-gpu-kernel-modules 580.173.02): GB10B = HalVarIdx 63 (g_chips2halspec_nvoc.c:114-117)
+note binds kgmmuFmtInitLevels_GB10X, kgmmuFmtInitPte/Pde/PdeMulti_GH10X (g_kern_gmmu_nvoc.c:625-705);
+note levels kern_gmmu_fmt_gb10x.c:51-61 + kern_gmmu_fmt_gh10x.c:53-118 (57-bit VA, PD4 [56], PD3 [55:47],
+note PD2 [46:38], PD1 [37:29], PD0 [28:21] dual 16-byte entries, PT_BIG [20:16], PT_SMALL [20:12]);
+note fields NV_MMU_VER3_* in common/inc/swref/published/hopper/gh100/dev_mmu.h:60-177.
+note Level numbers here: 0 PD4 (root) .. 4 PD0 (dual), 5 PT_BIG, 6 PT_SMALL.
+note Calls agpu_gmmu op a b; results 1000000 and up are refusals:
+note op 1 a=level b=va: entry index of va at that level. Refusal 1 level > 6, 6 va >= 2^57.
+note op 2 a=pa b=aperture: PDE (also the small half, word 1, of a dual PDE): ADDRESS 51:12, PCF 5:3 =
+note   2 VALID_CACHED_ATS_NOT_ALLOWED (gmmu_walk.c:745-755 with ATS off, kern_gmmu_gh100.c:221-256),
+note   APERTURE 2:1 (2 SYSTEM_COHERENT, 3 SYSTEM_NON_COHERENT). Refusal 2 address, 3 aperture.
+note op 3 a=pa b=flags: PTE. bit 0 of flags = GPU-uncached (volatile), bit 1 = non-coherent.
+note   VALID 0:0, APERTURE 2:1 (2 coherent or 3), PCF 7:3 = 16 REGULAR_RW_ATOMIC_CACHED_ACD or 17
+note   REGULAR_RW_ATOMIC_UNCACHED_ACD (what dmaUpdateVASpace_GF100 builds for a regular RW mapping,
+note   virt_mem_allocator_gm107.c:2436-2490: REGULAR, not RO, atomics on, ACD unless fabric MC), KIND 11:8
+note   = 0, ADDRESS 51:12, PEER_ID 63:61 = 0. Refusal 2 address, 4 flags.
+note op 4 a=root pa b=which: TLB invalidate words (kgmmuInvalidateTlb_GM107, kern_gmmu_gm107.c:103-259;
+note   kgmmuSetPdbToInvalidate_TU102, kern_gmmu_tu102.c:134-154; gb100/dev_vm.h:327-402):
+note   which 0 = PDB (BAR0 0xb830a0) ADDR 31:4 = low 28 bits of pa >> 12, APERTURE 1:1 = 1 SYS_MEM;
+note   which 1 = UPPER_PDB (0xb830a4) = pa >> 40, 20 bits; which 2 = MMU_INVALIDATE (0xb830b0) TRIGGER 31
+note   and ALL_VA 0, ALL_PDB 0, scope ALL_TLBS 0 = 2147483649 (0x80000001, Wolfram FromDigits).
+note   Refusal 2 root 0, not 4096-aligned or >= 2^52; 1 which > 2.
+note op 5 a=MMU_INVALIDATE read: 1 while TRIGGER (bit 31) is set, else 0 (kern_gmmu_tu102.c:50-85).
+note op 6 a=pa b=aperture: big half (word 0) of a dual PDE: ADDRESS_BIG 51:8 (shift 8), PCF_BIG 5:3 = 2,
+note   APERTURE_BIG 2:1. Refusal 2 address (not 256-aligned or >= 2^52), 3 aperture.
+note op 7 a=level: entries of one table (mmuFmtLevelSize: 2, 512, 512, 512, 256, 32, 512). Refusal 1.
+note op 8 a=level: bytes per entry (16 at PD0, else 8). Refusal 1.
+note op 9 a=level b=page shift (12, 16 or 21): the level the walk goes to next, or 7 when the entry at
+note   this level is the leaf. Refusal 1 level, 7 page shift.
+note op 10 a=level b=va: 0 when the CPU may write the entry for va at this level; refusal 5 when the
+note   level is PD0 or below and va is in GSP's range [4 GiB, 4.5 GiB) (gpu_vaspace.c:314-392: the client
+note   pins PD4..PD0 for it, GSP-RM writes everything under that PD0), 1 level > 6, 6 va >= 2^57.
+note Constants (decimal, from Wolfram): 2^57 = 144115188075855872, 2^52 = 4503599627370496,
+note 2^32 = 4294967296 (4 GiB), 2^32 + 2^29 = 4831838208 (4.5 GiB), 0x0FFFFFFF = 268435455,
+note 0xFFFFF = 1048575.
+fn lvlo lv ulong to ulong
+if eq lv 0
+ret 56
+end
+if eq lv 1
+ret 47
+end
+if eq lv 2
+ret 38
+end
+if eq lv 3
+ret 29
+end
+if eq lv 4
+ret 21
+end
+if eq lv 5
+ret 16
+end
+ret 12
+end
+fn lvbits lv ulong to ulong
+if eq lv 0
+ret 1
+end
+if eq lv 4
+ret 8
+end
+if eq lv 5
+ret 5
+end
+ret 9
+end
+fn paok pa ulong al ulong to bool
+if eq pa 0
+ret false
+end
+if ne and pa sub al 1 0
+ret false
+end
+ret lt pa 4503599627370496
+end
+fn vaidx lv ulong va ulong to ulong
+if gt lv 6
+ret 1000001
+end
+if ge va 144115188075855872
+ret 1000006
+end
+m = sub shl ulong 1 lvbits lv 1
+ret and shr va lvlo lv m
+end
+fn pdenc pa ulong ap ulong al ulong to ulong
+if not paok pa al
+ret 1000002
+end
+if or lt ap 2 gt ap 3
+ret 1000003
+end
+ret or or pa 16 shl ap 1
+end
+fn ptenc pa ulong fl ulong to ulong
+if not paok pa 4096
+ret 1000002
+end
+if gt fl 3
+ret 1000004
+end
+ap = add 2 shr fl 1
+pcf = add 16 and fl 1
+ret or or 1 shl ap 1 or shl pcf 3 pa
+end
+fn tlbw pa ulong wh ulong to ulong
+if not paok pa 4096
+ret 1000002
+end
+fr = shr pa 12
+if eq wh 0
+ret or shl and fr 268435455 4 2
+end
+if eq wh 1
+ret and shr fr 28 1048575
+end
+if eq wh 2
+ret 2147483649
+end
+ret 1000001
+end
+fn nextlv lv ulong ps ulong to ulong
+if gt lv 6
+ret 1000001
+end
+if and ne ps 12 and ne ps 16 ne ps 21
+ret 1000007
+end
+if lt lv 4
+ret add lv 1
+end
+if eq lv 4
+if eq ps 21
+ret 7
+end
+if eq ps 16
+ret 5
+end
+ret 6
+end
+if eq lv 5
+if eq ps 16
+ret 7
+end
+ret 1000001
+end
+if eq ps 12
+ret 7
+end
+ret 1000001
+end
+fn cpuok lv ulong va ulong to ulong
+if gt lv 6
+ret 1000001
+end
+if ge va 144115188075855872
+ret 1000006
+end
+if and ge lv 4 and ge va 4294967296 lt va 4831838208
+ret 1000005
+end
+ret 0
+end
+fn lvcount lv ulong to ulong
+if gt lv 6
+ret 1000001
+end
+ret shl ulong 1 lvbits lv
+end
+fn agpu_gmmu op ulong a ulong b ulong to ulong
+if eq op 1
+ret vaidx a b
+end
+if eq op 2
+ret pdenc a b 4096
+end
+if eq op 3
+ret ptenc a b
+end
+if eq op 4
+ret tlbw a b
+end
+if eq op 5
+ret shr and a 2147483648 31
+end
+if eq op 6
+ret pdenc a b 256
+end
+if eq op 7
+ret lvcount a
+end
+if eq op 8
+if gt a 6
+ret 1000001
+end
+if eq a 4
+ret 16
+end
+ret 8
+end
+if eq op 9
+ret nextlv a b
+end
+if eq op 10
+ret cpuok a b
+end
+ret 1000099
+end

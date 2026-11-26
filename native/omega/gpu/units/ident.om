@@ -1,0 +1,45 @@
+note SPDX-License-Identifier: MIT OR GPL-2.0-only
+note ident: is this PCI function the GB10 GPU? Decided before any register write, in two stages.
+note stage 0 uses PCI facts only (no MMIO). stage 1 adds the two identity registers read from BAR0.
+note Result 0 = accept. Otherwise the first failed check:
+note 1 vendor is not NVIDIA 0x10de. 2 device is not GB10 0x2e12 (lspci -nn on the Spark 2026-10-21).
+note 3 BAR0 is not 64 MiB (the GB10 has only BAR0, 0x24000000-0x27ffffff). 4 stage is not 0 or 1.
+note 5 PMC_BOOT_0 reads 0 or all ones (no answer).
+note 6 PMC_BOOT_42 ARCHITECTURE 29:24 is not GB200 0x1b (Spark GPUID.TXT: BOOT_0=0x1bb000a1, BOOT_42=0x1bba1000).
+note   GB100 0x1a with implementation 0xb is GB10B, another chip: this module's start-up (om/boot.om) and
+note   boot package (tools/package.sh) are GB20B's, so it is refused here, before any register write.
+note 7 PMC_BOOT_42 IMPLEMENTATION 23:20 is not 0xb (GB20B).
+note Sources (open-gpu-kernel-modules 580.173.02, MIT): src/common/inc/swref/published/nv_ref.h:153,170,182;
+note src/nvidia/generated/g_hal_archimpl.h:88 (GB10B = ARCHITECTURE_GB100 with IMPLEMENTATION_B) and :96 (GB20B =
+note ARCHITECTURE_GB200 with IMPLEMENTATION_B). Read on the Spark's bare metal 2026-11-12T05:45Z: boot0 1bb000a1,
+note boot42 1bba1000, i.e. architecture 0x1b, implementation 0xb (docs/evidence/GPUID-20261112T054515Z.TXT).
+note Decimal values: 0x10de 4318, 0x2e12 11794, 64 MiB 67108864, 0xffffffff 4294967295, 0x1a 26, 0x1b 27, 0xb 11,
+note 0x3f 63 (aien-calc receipts in docs/calc-receipts, listed in docs/STATUS.md).
+fn agpu_ident vendor ulong device ulong barlen ulong boot0 ulong boot42 ulong stage ulong to ulong
+if ne vendor 4318
+ret 1
+end
+if ne device 11794
+ret 2
+end
+if ne barlen 67108864
+ret 3
+end
+if eq stage 0
+ret 0
+end
+if ne stage 1
+ret 4
+end
+if or eq boot0 0 eq boot0 4294967295
+ret 5
+end
+arch = and shr boot42 24 63
+if ne arch 27
+ret 6
+end
+if ne and shr boot42 20 15 11
+ret 7
+end
+ret 0
+end

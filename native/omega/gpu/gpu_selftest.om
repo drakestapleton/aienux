@@ -1,0 +1,79 @@
+note SPDX-License-Identifier: MIT OR GPL-2.0-only
+note Pure seeded Omega self-test for AienOS GB20B GPU driver units (ident + gmmu + gb20b_policy).
+text okmsg "AIENOS_OMEGA_GPU_SELFTEST: PASS checks=14 neg=6\n"
+text badmsg "AIENOS_OMEGA_GPU_SELFTEST: FAIL\n"
+fn fail1 code int to int
+r = write 1 badmsg 0 len badmsg
+ret code
+end
+fn main to int
+note 1. GB20B chip identity positive (10de:2e12, BAR0 64 MiB, BOOT_0=0x1bb000a1, BOOT_42=0x1bba1000)
+if ne agpu_ident 4318 11794 67108864 464519329 465178624 1 0
+ret fail1 1
+end
+note 2. Negative control: wrong PCI vendor refused
+if eq agpu_ident 6966 11794 67108864 464519329 465178624 1 0
+ret fail1 2
+end
+note 3. Negative control: wrong BOOT_42 (GB10B arch=0x1a impl=0xb instead of GB20B arch=0x1b) refused
+gb10b42 = add shl ulong 26 24 shl ulong 11 20
+if eq agpu_ident 4318 11794 67108864 464519329 gb10b42 1 0
+ret fail1 3
+end
+note 4. GB20B GR ctx buffer cache policy: ALL buf_kind 0..11 MUST be GPU-uncached (1)
+for k ulong 12
+if ne agpu_gb20b_policy 1 k 0 1
+ret fail1 4
+end
+end
+note 5. Negative control: out-of-range buf_kind 12 refused
+if ne agpu_gb20b_policy 1 12 0 1000001
+ret fail1 5
+end
+note 6. GMMU VER3 PTE encoding with GPU-uncached flag (fl=1 -> VALID=1 | AP=2<<1 | PCF=17<<3 = 0x8d = 141)
+pa0 = ulong 3219128320
+pte = agpu_gmmu 3 pa0 1
+if ne pte or pa0 141
+ret fail1 6
+end
+note 7. Negative control: unaligned PA refused by GMMU
+if ne agpu_gmmu 3 4097 1 1000002
+ret fail1 7
+end
+note 8. SC_PDB(0) patch positive (root=0xfd3dfb6000, old_sc=0xc288ac07 -> lo=0x3dfb6c07, hi=0xfd)
+lo = agpu_gb20b_policy 2 1087666610176 3263736839
+if ne lo 1039887367
+ret fail1 8
+end
+hi = agpu_gb20b_policy 3 1087666610176 0
+if ne hi 253
+ret fail1 9
+end
+note 9. Negative control: invalid subcontext target (old_sc & 0xfff == 1) refused
+if ne agpu_gb20b_policy 2 1087666610176 1 1000003
+ret fail1 10
+end
+note 10. Global GR ctx buffer one-time init guard (gcb[5..6] init=1 once, then 0)
+if ne agpu_gb20b_policy 4 5 0 1
+ret fail1 11
+end
+if ne agpu_gb20b_policy 4 5 1 0
+ret fail1 12
+end
+if ne agpu_gb20b_policy 4 4 0 0
+ret fail1 13
+end
+note 11. TSG+ctxshare channel hVASpace must be 0, and work-submit token sets bit 30 (0x40000000)
+if ne agpu_gb20b_policy 5 1 3404726273 0
+ret fail1 14
+end
+if ne agpu_gb20b_policy 6 0 0 1073741824
+ret fail1 15
+end
+note 12. Negative control: runlist > 127 refused
+if ne agpu_gb20b_policy 6 128 0 1000008
+ret fail1 16
+end
+r = write 1 okmsg 0 len okmsg
+ret 0
+end

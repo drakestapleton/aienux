@@ -1,0 +1,72 @@
+note SPDX-License-Identifier: MIT OR GPL-2.0-only
+note rpdes: build NV90F1_CTRL_VASPACE_COPY_SERVER_RESERVED_PDES_PARAMS (184 bytes, little endian;
+note common/sdk/nvidia/inc/ctrl/ctrl90f1.h:270-332; offsets measured with gdb ptype /o on the 580.173.02
+note headers, /tmp/owndrv/stagec-layout/layouts1.txt:140-155) the way CPU-RM fills it for a GSP client
+note (_gvaspacePopulatePDEentries, src/kernel/mem_mgr/gpu_vaspace.c:5221-5259, and
+note gvaspaceGetPageLevelInfo, gpu_vaspace.c:3976-4033):
+note 0 hSubDevice = 0 and 4 subDeviceId = 0 (the caller may set its subdevice handle), 8 pageSize =
+note 2 MiB (1 << GMMU_PD0_VADDR_BIT_LO 21, gpu_vaspace.c:64), 16 virtAddrLo = 4 GiB, 24 virtAddrHi =
+note 4.5 GiB - 1, 32 numLevelsToCopy = 5 (PD4 .. PD0: the walk stops at the level with page shift 21),
+note 36..39 zero, then levels[6] of 24 bytes from 40: physAddress u64, size u64, aperture u32 at 16,
+note pageShift u8 at 20, 21..23 zero. Level i: page shift 56 47 38 29 21 (virtAddrBitLo,
+note kern_gmmu_fmt_gh10x.c:62-103); size = mmuFmtLevelSize: 16 for PD4 (2 entries of 8,
+note kgmmuGetPDBAllocSize_GP100 for every directory, gmmu_walk.c:151-153), 4096 for PD3, PD2, PD1 and PD0
+note (512 x 8, 256 x 16); aperture = GMMU_APERTURE_SYS_COH 4 for cached system memory, else
+note GMMU_APERTURE_SYS_NONCOH 3 (the enum of inc/libraries/mmu/gmmu_fmt.h:271-318, not the PDE field).
+note levels[5] stays zero.
+note lv: [0..4] device addresses of the PD4, PD3, PD2, PD1, PD0 pages covering 4 GiB, [5] 1 when those
+note pages are CPU-cached (coherent), 0 when not; [6], [7] unused.
+note Result 0, or refusal 1000001 a level address is 0, not 4096-aligned or >= 2^52; 1000002 lv[5] > 1.
+note Constants (Wolfram): 2 MiB = 2097152, 4 GiB = 4294967296, 4.5 GiB - 1 = 4831838207 (0x11FFFFFFF),
+note 2^52 = 4503599627370496.
+fn st64 p edit uchar 184 o ulong v ulong to void
+for k ulong 8
+put p add o k uchar and shr v mul k 8 255
+end
+end
+fn shiftof i ulong to ulong
+if eq i 0
+ret 56
+end
+if eq i 1
+ret 47
+end
+if eq i 2
+ret 38
+end
+if eq i 3
+ret 29
+end
+ret 21
+end
+fn agpu_rpdes p edit uchar 184 lv view ulong 8 to ulong
+for i ulong 5
+a = get lv i
+if or or eq a 0 ne and a 4095 0 ge a 4503599627370496
+ret 1000001
+end
+end
+if gt get lv 5 1
+ret 1000002
+end
+for k ulong 184
+put p k uchar 0
+end
+st64 p 8 2097152
+st64 p 16 4294967296
+st64 p 24 4831838207
+put p 32 uchar 5
+ap = add 3 get lv 5
+for i ulong 5
+o = add 40 mul i 24
+st64 p o get lv i
+sz = ulong 4096
+if eq i 0
+sz = 16
+end
+st64 p add o 8 sz
+put p add o 16 uchar ap
+put p add o 20 uchar shiftof i
+end
+ret 0
+end

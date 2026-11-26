@@ -1,0 +1,339 @@
+note SPDX-License-Identifier: Apache-2.0
+note Pure seeded Omega (OM-1) AienOS Helix Runtime (ZERO C, ZERO Python, ZERO CUDA, ZERO nvidia.ko).
+note Composes Allen pure-Omega state machine (base.om + runtime.om) with live Omega Helix
+note GB20B GPU inference directly over /dev/aien-gpu via execprog.
+note Usage: aienos-helix <ollm-bin> <ckpt> <merges> <tokens> <prompt>
+
+global hxPkt uchar 4096
+global hxOut uchar 4096
+global hxArg uchar 512
+global hxEnds uchar 8
+global hxSt uchar 4
+
+text hxDevAien "/dev/aien-gpu"
+text hxDevNv "/dev/nvidiactl"
+text hxDevNull "/dev/null"
+text hxCmdGsamp "gsampb"
+text hxSeed "42"
+text hxTemp "700"
+text hxMsgUsage "AIENOS_HELIX_REFUSED reason=usage\n"
+text hxMsgAdmit "AIENOS_HELIX_REFUSED reason=allen_admission\n"
+text hxMsgExec "AIENOS_HELIX_FAIL reason=exec_or_gpu\n"
+text hxMsgCommit "AIENOS_HELIX_FAIL reason=allen_commit\n"
+text hxPrefixPass "AIENOS_HELIX_TURN: PASS seq="
+text hxKeyHist " hist="
+text hxKeyAct " active="
+text hxKeyDrv " driver="
+text hxDrvAien "/dev/aien-gpu"
+text hxDrvOther "other"
+text hxKeyNv " nvidia_absent="
+text hxKeyMs " ms="
+text hxKeyBytes " out_bytes="
+text hxLblPrompt "\nAIENOS_HELIX_PROMPT: "
+text hxLblAnswer "\nAIENOS_HELIX_ANSWER: "
+
+fn hxPktU16 off ulong v ulong to void
+put hxPkt off uchar and v 255
+put hxPkt add off 1 uchar and shr v 8 255
+end
+
+fn hxPktAddArg pos ulong idx ulong to ulong
+r = argread idx hxArg 0 len hxArg
+if le r 0
+ret 0
+end
+n = ulong r
+hxPktU16 pos n
+pos = add pos 2
+for i ulong n
+put hxPkt add pos i get hxArg i
+end
+ret add pos n
+end
+
+fn hxPktAddPrompt pos ulong to ulong
+n = get R 7
+hxPktU16 pos n
+pos = add pos 2
+for i ulong n
+put hxPkt add pos i get Prompt i
+end
+ret add pos n
+end
+
+fn hxPktAddLit pos ulong which ulong to ulong
+if eq which 1
+n = len hxCmdGsamp
+hxPktU16 pos n
+pos = add pos 2
+for i ulong n
+put hxPkt add pos i get hxCmdGsamp i
+end
+ret add pos n
+end
+if eq which 2
+n = len hxSeed
+hxPktU16 pos n
+pos = add pos 2
+for i ulong n
+put hxPkt add pos i get hxSeed i
+end
+ret add pos n
+end
+n = len hxTemp
+hxPktU16 pos n
+pos = add pos 2
+for i ulong n
+put hxPkt add pos i get hxTemp i
+end
+ret add pos n
+end
+
+fn hxWord32 off ulong to int
+v = uint 0
+for i ulong 4
+v = or v shl uint get hxEnds add off i mul i 8
+end
+ret int v
+end
+
+fn hxBuildPkt to ulong
+hxPktU16 0 8
+p = ulong 2
+p = hxPktAddArg p 1
+if eq p 0
+ret 0
+end
+p = hxPktAddLit p 1
+p = hxPktAddArg p 2
+if eq p 0
+ret 0
+end
+p = hxPktAddLit p 2
+p = hxPktAddArg p 4
+if eq p 0
+ret 0
+end
+p = hxPktAddLit p 3
+p = hxPktAddPrompt p
+p = hxPktAddArg p 3
+ret p
+end
+
+fn hxSanitize n ulong to ulong
+m = ulong 0
+prevsp = true
+for i ulong n
+if ge m 159
+break
+end
+c = get hxOut i
+if or eq c 10 or eq c 13 eq c 9
+c = uchar 32
+end
+if and ge c 32 le c 126
+if eq c 32
+if not prevsp
+put In m c
+m = add m 1
+prevsp = true
+end
+else
+put In m c
+m = add m 1
+prevsp = false
+end
+end
+end
+while gt m 0
+if ne get In sub m 1 32
+break
+end
+m = sub m 1
+end
+put Inlen 0 m
+ret m
+end
+
+fn hxChildExec plen ulong rd int wr int to void
+z = dupfd wr 1 0
+dn = fopen hxDevNull 0 len hxDevNull 1 0
+if ge dn 0
+z = dupfd int dn 2 0
+z = fclose int dn
+end
+z = fclose rd
+z = fclose wr
+z = execprog hxPkt 0 plen
+exit 127
+end
+
+fn hxRunChild plen ulong to long
+if ne pipefds hxEnds 0 8 0 0
+ret neg long 1
+end
+rd = hxWord32 0
+wr = hxWord32 4
+pid = fork
+if lt pid 0
+z = fclose rd
+z = fclose wr
+ret neg long 2
+end
+if eq pid 0
+hxChildExec plen rd wr
+end
+z = fclose wr
+olen = ulong 0
+while lt olen 4000
+z = read rd hxOut olen sub 4000 olen
+if le z 0
+break
+end
+olen = add olen ulong z
+end
+z = fclose rd
+z = waitpid int pid hxSt 0 4 0
+if ne z pid
+ret neg long 3
+end
+if or ne get hxSt 0 0 ne get hxSt 1 0
+ret neg long 4
+end
+ret long olen
+end
+
+fn hxEmitHdrA to void
+outreset
+i = ulong 0
+while lt i len hxPrefixPass
+emitb get hxPrefixPass i
+i = add i 1
+end
+emitn get R 0
+i = 0
+while lt i len hxKeyHist
+emitb get hxKeyHist i
+i = add i 1
+end
+emitn get R 9
+i = 0
+while lt i len hxKeyAct
+emitb get hxKeyAct i
+i = add i 1
+end
+emitn get R 1
+i = 0
+while lt i len hxKeyDrv
+emitb get hxKeyDrv i
+i = add i 1
+end
+end
+
+fn hxEmitHeader ms ulong olen ulong aien_ok bool nv_abs bool to void
+hxEmitHdrA
+i = ulong 0
+if aien_ok
+while lt i len hxDrvAien
+emitb get hxDrvAien i
+i = add i 1
+end
+else
+while lt i len hxDrvOther
+emitb get hxDrvOther i
+i = add i 1
+end
+end
+i = 0
+while lt i len hxKeyNv
+emitb get hxKeyNv i
+i = add i 1
+end
+if nv_abs
+emitn 1
+else
+emitn 0
+end
+i = 0
+while lt i len hxKeyMs
+emitb get hxKeyMs i
+i = add i 1
+end
+emitn ms
+i = 0
+while lt i len hxKeyBytes
+emitb get hxKeyBytes i
+i = add i 1
+end
+emitn olen
+end
+
+fn hxEmitBody to void
+for i ulong len hxLblPrompt
+emitb get hxLblPrompt i
+end
+for i ulong get R 7
+emitb get Prompt i
+end
+for i ulong len hxLblAnswer
+emitb get hxLblAnswer i
+end
+for i ulong get R 8
+emitb get Answer i
+end
+emitb 10
+end
+
+fn main to int
+if lt argcnt 6
+w = write 1 hxMsgUsage 0 len hxMsgUsage
+ret 1
+end
+plen_arg = argread 5 In 0 len In
+if lt plen_arg 0
+put Inlen 0 0
+else
+put Inlen 0 ulong plen_arg
+end
+t0 = div ulong monons 1000000
+if not start 1 t0
+w = write 1 hxMsgAdmit 0 len hxMsgAdmit
+ret 2
+end
+pktlen = hxBuildPkt
+if eq pktlen 0
+cancel
+w = write 1 hxMsgUsage 0 len hxMsgUsage
+ret 3
+end
+olen = hxRunChild pktlen
+if le olen 0
+cancel
+w = write 1 hxMsgExec 0 len hxMsgExec
+ret 4
+end
+slen = hxSanitize ulong olen
+if eq slen 0
+cancel
+w = write 1 hxMsgExec 0 len hxMsgExec
+ret 5
+end
+t1 = div ulong monons 1000000
+if lt t1 t0
+t1 = t0
+end
+if not answer get R 0 t1
+w = write 1 hxMsgCommit 0 len hxMsgCommit
+ret 6
+end
+if or ne get R 9 2 ne get R 1 0
+w = write 1 hxMsgCommit 0 len hxMsgCommit
+ret 7
+end
+aien_ok = eq faccess hxDevAien 0 len hxDevAien 6 0
+nv_abs = lt faccess hxDevNv 0 len hxDevNv 0 0
+hxEmitHeader sub t1 t0 ulong olen aien_ok nv_abs
+hxEmitBody
+w = write 1 Outb 0 get Outlen 0
+ret 0
+end

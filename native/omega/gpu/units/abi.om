@@ -1,0 +1,96 @@
+note SPDX-License-Identifier: MIT OR GPL-2.0-only
+note abi: check an ioctl argument block of /dev/aien-gpu before the kernel acts on it.
+note The kernel copies the user's block (128 bytes, little endian, layout in kmod/aien_gpu_uapi.h) into
+note kernel memory first, so the block cannot change between this check and its use.
+note req 1 = AGPU_BOOT. Fields: 0 version (2 = AGPU_BOOT_VERSION, the GB20B agpu_boot_out; 1 was the GB10B
+note layout and is refused), 8 cotoff (arena offset of the SEC2 COT packet, 4-aligned),
+note 16 cotlen (1..1024), 20 appver, 24 fmcpa (device address of GSP_FMC_BOOT_PARAMS, 88 bytes, inside the
+note arena), 32 cmdqoff and 40 statqoff (arena offsets of the two 262144-byte queues, 4096-aligned,
+note disjoint), 48..63 four poll budgets (each 1..10000000), 64 pause_us (1..1000), 68 waitms
+note (1..60000), 72 txseq (the command-queue sequence number the package left), 76..127 zero.
+note Result 0 accept, or a refusal code: 1 unknown request, 2 version, 3 COT packet, 4 FMC arguments
+note outside the arena, 5 queue offsets, 6 poll budget, 7 pause, 8 wait, 9 reserved bytes not zero.
+note req 2 = AGPU_ARENA_READ: 0 off, 8 len (1..16777216), 16 user pointer (not checked here; the kernel
+note copies with copy_to_user). Refusal 10: the range is empty, too long or not inside the arena.
+fn ld32 a view uchar 128 o ulong to ulong
+x = or ulong get a o shl ulong get a add o 1 8
+y = or shl ulong get a add o 2 16 shl ulong get a add o 3 24
+ret or x y
+end
+fn ld64 a view uchar 128 o ulong to ulong
+ret or ld32 a o shl ld32 a add o 4 32
+end
+note an arena range [off, off+n) is inside the arena without wrapping
+fn inside off ulong n ulong abytes ulong to bool
+if gt n abytes
+ret false
+end
+ret le off sub abytes n
+end
+fn qok a view uchar 128 abytes ulong to bool
+c = ld64 a 32
+s = ld64 a 40
+if or ne and c 4095 0 ne and s 4095 0
+ret false
+end
+if or not inside c 262144 abytes not inside s 262144 abytes
+ret false
+end
+if lt c s
+ret le add c 262144 s
+end
+ret le add s 262144 c
+end
+fn bootchk a view uchar 128 aiova ulong abytes ulong to ulong
+if ne ld32 a 0 2
+ret 2
+end
+co = ld64 a 8
+cl = ld32 a 16
+if or or eq cl 0 gt cl 1024 ne and co 3 0
+ret 3
+end
+if not inside co cl abytes
+ret 3
+end
+f = ld64 a 24
+if or lt f aiova not inside sub f aiova 88 abytes
+ret 4
+end
+if not qok a abytes
+ret 5
+end
+for k ulong 4
+p = ld32 a add 48 mul k 4
+if or eq p 0 gt p 10000000
+ret 6
+end
+end
+p = ld32 a 64
+if or eq p 0 gt p 1000
+ret 7
+end
+p = ld32 a 68
+if or eq p 0 gt p 60000
+ret 8
+end
+for k ulong 52
+if ne get a add 76 k 0
+ret 9
+end
+end
+ret 0
+end
+fn agpu_abi_check req ulong a view uchar 128 aiova ulong abytes ulong to ulong
+if eq req 1
+ret bootchk a aiova abytes
+end
+if eq req 2
+n = ld64 a 8
+if or or eq n 0 gt n 16777216 not inside ld64 a 0 n abytes
+ret 10
+end
+ret 0
+end
+ret 1
+end
