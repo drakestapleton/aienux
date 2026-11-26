@@ -33,7 +33,7 @@ jobs:
       run:
         working-directory: crates/allen-reflex-kernel
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: clippy, rustfmt
